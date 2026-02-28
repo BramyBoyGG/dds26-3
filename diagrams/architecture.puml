@@ -1,0 +1,51 @@
+@startuml "Orchestrated SAGA with Redis Streams"
+
+skinparam componentStyle rectangle
+skinparam backgroundColor #FEFEFE
+skinparam shadowing false
+
+title High-Level Architecture: Orchestrated SAGA with Redis Streams
+
+actor Client
+
+package "API Gateway" {
+    [nginx] as GW
+}
+
+package "Order Service  - Saga Orchestrator" {
+    [Flask App\nREST API + Transaction State Machine\n+ consumer thread (tx-responses)] as OrderApp
+    database "order-db (Redis)\norders + tx log\n+ stream: tx-responses" as OrderDB
+}
+
+package "Stock Service" {
+    [Flask App\nREST API\n+ consumer thread (stock-commands)] as StockApp
+    database "stock-db (Redis)\nitems\n+ stream: stock-commands" as StockDB
+}
+
+package "Payment Service" {
+    [Flask App\nREST API\n+ consumer thread (payment-commands)] as PayApp
+    database "payment-db (Redis)\nusers\n+ stream: payment-commands" as PayDB
+}
+
+' Client -> Gateway -> Services (REST for CRUD)
+Client --> GW : HTTP
+GW --> OrderApp : /orders/*
+GW --> StockApp : /stock/*
+GW --> PayApp : /payment/*
+
+' Order reads/writes its own DB
+OrderApp --> OrderDB : orders + tx state\n+ consume tx-responses
+
+' Order publishes commands to other services' Redis
+OrderApp ..> StockDB : XADD stock-commands\n(RESERVE / COMPENSATE)
+OrderApp ..> PayDB : XADD payment-commands\n(DEDUCT / REFUND)
+
+' Stock reads commands from its own DB, writes responses to order-db
+StockApp --> StockDB : data + consume stock-commands
+StockApp ..> OrderDB : XADD tx-responses
+
+' Payment reads commands from its own DB, writes responses to order-db
+PayApp --> PayDB : data + consume payment-commands
+PayApp ..> OrderDB : XADD tx-responses
+
+@enduml

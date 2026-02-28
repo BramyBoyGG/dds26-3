@@ -1,0 +1,42 @@
+@startuml "Checkout - Insufficient Stock"
+
+skinparam backgroundColor #FEFEFE
+skinparam shadowing false
+
+title Checkout — Insufficient Stock
+
+actor Client
+participant "Nginx\nGateway" as GW
+participant "Order Service\n(+ Saga Orchestrator)" as Order
+database "order-db\n(+ tx log)" as OrderDB
+queue "stock-commands\n(stream)" as SCS
+participant "Stock\nService" as Stock
+database "stock-db" as StockDB
+queue "tx-responses\n(stream)" as SRS
+
+== 1. Initiate Checkout ==
+Client -> GW : POST /orders/checkout/{order_id}
+GW -> Order : POST /checkout/{order_id}
+Order -> OrderDB : read order\n(items, user_id, total_cost)
+Order -> OrderDB : CREATE tx:{tx_id}\nstate=STARTED
+
+== 2. Reserve Stock — FAILS ==
+Order -> OrderDB : tx:{tx_id} state=RESERVING_STOCK
+Order -> SCS : XADD stock-commands\n{tx_id, cmd=RESERVE_STOCK, items}
+SCS -> Stock : XREADGROUP stock-commands
+Stock -> StockDB : check stock
+note right of Stock #Salmon : Insufficient stock!\nItem X has 2, need 5
+Stock -> SRS : XADD tx-responses\n{tx_id, step=RESERVE_STOCK, status=FAILURE,\n reason="insufficient stock for item X"}
+SRS -> Order : XREADGROUP tx-responses
+
+== 3. No Compensation Needed ==
+note right of Order #LightYellow : No prior steps succeeded,\nno compensation required.\nStock reservation was atomic\n(all-or-nothing).
+
+== 4. Saga Aborted ==
+Order -> OrderDB : tx:{tx_id} state=ABORTED
+note right of Order #Salmon : Transaction aborted:\ninsufficient stock
+
+Order --> GW : 400 Out of stock
+GW --> Client : 400 Out of stock
+
+@enduml

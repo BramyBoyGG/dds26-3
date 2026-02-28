@@ -1,0 +1,59 @@
+@startuml "Checkout - Payment Failure"
+
+skinparam backgroundColor #FEFEFE
+skinparam shadowing false
+
+title Checkout — Payment Failure - compensating transaction
+
+actor Client
+participant "Nginx\nGateway" as GW
+participant "Order Service\n(+ Saga Orchestrator)" as Order
+database "order-db\n(+ tx log)" as OrderDB
+queue "stock-commands\n(stream)" as SCS
+participant "Stock\nService" as Stock
+database "stock-db" as StockDB
+queue "payment-commands\n(stream)" as PCS
+participant "Payment\nService" as Payment
+database "payment-db" as PayDB
+queue "tx-responses\n(stream)" as SRS
+
+== 1. Initiate Checkout ==
+Client -> GW : POST /orders/checkout/{order_id}
+GW -> Order : POST /checkout/{order_id}
+Order -> OrderDB : read order\n(items, user_id, total_cost)
+Order -> OrderDB : CREATE tx:{tx_id}\nstate=STARTED
+
+== 2. Reserve Stock — SUCCESS ==
+Order -> OrderDB : tx:{tx_id} state=RESERVING_STOCK
+Order -> SCS : XADD stock-commands\n{tx_id, cmd=RESERVE_STOCK, items}
+SCS -> Stock : XREADGROUP stock-commands
+Stock -> StockDB : subtract stock ✓
+Stock -> SRS : XADD tx-responses\n{tx_id, step=RESERVE_STOCK, status=SUCCESS}
+SRS -> Order : XREADGROUP tx-responses
+
+== 3. Deduct Payment — FAILS ==
+Order -> OrderDB : tx:{tx_id} state=DEDUCTING_PAYMENT
+Order -> PCS : XADD payment-commands\n{tx_id, cmd=DEDUCT_PAYMENT, user_id, amount}
+PCS -> Payment : XREADGROUP payment-commands
+Payment -> PayDB : check credit
+note right of Payment #Salmon : Insufficient credit!\nUser has 5, need 15
+Payment -> SRS : XADD tx-responses\n{tx_id, step=DEDUCT_PAYMENT, status=FAILURE,\n reason="insufficient credit"}
+SRS -> Order : XREADGROUP tx-responses
+
+== 4. Compensate: Restore Stock ==
+note right of Order #LightYellow : Payment failed → must compensate\npreviously successful RESERVE_STOCK
+Order -> OrderDB : tx:{tx_id} state=COMPENSATING_STOCK
+Order -> SCS : XADD stock-commands\n{tx_id, cmd=COMPENSATE_STOCK, items}
+SCS -> Stock : XREADGROUP stock-commands
+Stock -> StockDB : add stock back ✓
+Stock -> SRS : XADD tx-responses\n{tx_id, step=COMPENSATE_STOCK, status=SUCCESS}
+SRS -> Order : XREADGROUP tx-responses
+
+== 5. Saga Aborted ==
+Order -> OrderDB : tx:{tx_id} state=ABORTED
+note right of Order #Salmon : Transaction aborted:\ninsufficient credit\n(stock compensated)
+
+Order --> GW : 400 User out of credit
+GW --> Client : 400 User out of credit
+
+@enduml

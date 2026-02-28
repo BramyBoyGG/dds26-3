@@ -1,7 +1,23 @@
-# Distributed Data Systems Project Template
+# Shopping Cart System 
 
-Basic project structure with Python's Flask and Redis. 
-**You are free to use any web framework in any language and any database you like for this project.**
+### High Level Architecture 
+
+
+Our project implements a reactive microservice architecture with an orchestrated SAGA pattern for distributed transactions. We use Redis streams as our message broker.
+#### Notation used in diagrams
+- **XADD** — Append a message to a stream. Used by services to publish commands and responses (e.g., `XADD stock-commands {tx_id, cmd=RESERVE_STOCK, items}`).
+- **XREADGROUP** — Read messages from a stream as part of a consumer group.
+- **XACK** — Acknowledge a message has been processed. Unacknowledged messages remain in the Pending Entries List (PEL) and are redelivered on consumer restart.
+- **tx_id** — Transaction ID. A unique identifier generated per checkout, used as the idempotency key across all saga steps.
+- **tx:{tx_id}** — The transaction log entry stored in `order-db`, tracking the current state of the saga (e.g., `STARTED`, `RESERVING_STOCK`, `COMPLETED`, `ABORTED`).
+
+![Architecture](diagrams/architecture.png) 
+
+### Transaction State Machine 
+
+![Transaction State Machine](diagrams/state_machine.png) 
+
+For detailed step-by-step checkout flows, see the [Appendix: Sequence Diagrams](#appendix-sequence-diagrams).
 
 ### Project structure
 
@@ -51,3 +67,25 @@ but you can find any database you want in https://artifacthub.io/ and adapt the 
 Similarly to the `minikube` deployment but run the `deploy-charts-cluster.sh` in the helm step to also install an ingress to the cluster. 
 
 ***Requirements:*** You need to have access to kubectl of a k8s cluster.
+
+---
+
+## Appendix: Sequence Diagrams
+
+### Checkout — Happy Path
+
+All SAGA steps succeed: stock is reserved, payment is deducted, and the order is marked as paid.
+
+![Happy Path](diagrams/happy_path.png)
+
+### Checkout — Insufficient Stock
+
+Stock reservation fails. Since no prior steps succeeded, no compensation is needed. The transaction is aborted.
+
+![Insufficient Stock](diagrams/stock_insufficient.png)
+
+### Checkout — Payment Failure
+
+Stock reservation succeeds but payment fails. The orchestrator triggers a compensating transaction to restore the reserved stock, then aborts.
+
+![Payment Failure](diagrams/payment_failure.png)

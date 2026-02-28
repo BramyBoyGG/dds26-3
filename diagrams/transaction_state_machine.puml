@@ -1,0 +1,44 @@
+@startuml "Transaction State Machine"
+
+skinparam backgroundColor #FEFEFE
+skinparam shadowing false
+
+title Checkout Transaction State Machine
+
+state "STARTED" as S : Generate tx_id\nPersist tx log entry\nwith order details
+state "RESERVING_STOCK" as RS : XADD stock-commands\n{tx_id, cmd=RESERVE_STOCK, items}\nWait for tx-response (timeout)
+state "DEDUCTING_PAYMENT" as DP : XADD payment-commands\n{tx_id, cmd=DEDUCT_PAYMENT, user_id, amount}\nWait for tx-response (timeout)
+state "COMPENSATING_STOCK" as CS : XADD stock-commands\n{tx_id, cmd=COMPENSATE_STOCK, items}\nWait for tx-response (timeout)
+state "COMPLETED" as C #LightGreen : Mark order.paid = true\nTerminal state
+state "ABORTED" as A #Salmon : Order stays unpaid\nTerminal state
+
+[*] --> S : POST /checkout/{order_id}
+
+S --> RS : persist state\nthen publish command
+
+RS --> DP : SUCCESS\npersist state\nthen publish command
+RS --> A : FAILURE\n(no compensation needed)
+RS --> RS : TIMEOUT\n(retry, idempotent)
+
+DP --> C : SUCCESS\nmark order paid
+DP --> CS : FAILURE\n(must compensate stock)
+DP --> DP : TIMEOUT\n(retry, idempotent)
+
+CS --> A : SUCCESS\n(stock restored)
+CS --> CS : TIMEOUT\n(retry until success\ncompensation must complete)
+
+C --> [*]
+A --> [*]
+
+note right of RS
+  On **Order service restart**:
+  scan tx log for non-terminal states,
+  re-enter state machine at recorded state
+end note
+
+note right of CS
+  Compensation **must eventually succeed**.
+  Retry indefinitely with backoff.
+end note
+
+@enduml
