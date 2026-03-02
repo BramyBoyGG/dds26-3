@@ -8,6 +8,8 @@ import redis
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
+from lua_scripts import LUA_SUBTRACT_STOCK, LUA_ADD_STOCK
+
 
 DB_ERROR_STR = "DB error"
 
@@ -24,6 +26,10 @@ def close_db_connection():
 
 
 atexit.register(close_db_connection)
+
+# Register Lua scripts with Redis
+subtract_script = db.register_script(LUA_SUBTRACT_STOCK)
+add_script = db.register_script(LUA_ADD_STOCK)
 
 
 class StockValue(Struct):
@@ -84,29 +90,29 @@ def find_item(item_id: str):
 
 @app.post('/add/<item_id>/<amount>')
 def add_stock(item_id: str, amount: int):
-    item_entry: StockValue = get_item_from_db(item_id)
-    # update stock, serialize and update database
-    item_entry.stock += int(amount)
+    amount = int(amount)
     try:
-        db.set(item_id, msgpack.encode(item_entry))
+        new_stock = add_script(keys=[item_id], args=[amount])
+        if new_stock == 0:
+            abort(400, f"Item: {item_id} not found!")
+        return Response(f"Item: {item_id} stock updated to: {new_stock}", status=200)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
 
 
 @app.post('/subtract/<item_id>/<amount>')
 def remove_stock(item_id: str, amount: int):
-    item_entry: StockValue = get_item_from_db(item_id)
-    # update stock, serialize and update database
-    item_entry.stock -= int(amount)
-    app.logger.debug(f"Item: {item_id} stock updated to: {item_entry.stock}")
-    if item_entry.stock < 0:
-        abort(400, f"Item: {item_id} stock cannot get reduced below zero!")
+    amount = int(amount)
     try:
-        db.set(item_id, msgpack.encode(item_entry))
+        new_stock = subtract_script(keys=[item_id], args=[amount])
+        if new_stock == 0:
+            abort(400, f"Item: {item_id} not found!")
+        elif new_stock == -1:
+            abort(400, f"Item: {item_id} stock cannot get reduced below zero!")
+        app.logger.debug(f"Item: {item_id} stock updated to: {new_stock}")
+        return Response(f"Item: {item_id} stock updated to: {new_stock}", status=200)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
 
 
 if __name__ == '__main__':
