@@ -1,7 +1,6 @@
 import unittest
 
-import utils as tu
-
+from . import utils as tu
 
 class TestMicroservices(unittest.TestCase):
 
