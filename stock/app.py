@@ -8,7 +8,9 @@ import redis
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
-from lua_scripts import LUA_SUBTRACT_STOCK, LUA_ADD_STOCK
+from lua_scripts import LUA_SUBTRACT_STOCK, LUA_SUBTRACT_STOCK_BATCH, LUA_ADD_STOCK
+# NOTE: stream_consumer imports from this module (app) at runtime, so avoid
+# importing stream_consumer at the top level to prevent circular import issues.
 
 
 DB_ERROR_STR = "DB error"
@@ -20,15 +22,24 @@ db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
                               password=os.environ['REDIS_PASSWORD'],
                               db=int(os.environ['REDIS_DB']))
 
+order_db: redis.Redis = redis.Redis(
+    host=os.environ.get('ORDER_REDIS_HOST', 'order-db'),
+    port=int(os.environ.get('ORDER_REDIS_PORT', '6379')),
+    password=os.environ.get('ORDER_REDIS_PASSWORD', 'redis'),
+    db=int(os.environ.get('ORDER_REDIS_DB', '0')),
+)
+
 
 def close_db_connection():
     db.close()
+    order_db.close()
 
 
 atexit.register(close_db_connection)
 
 # Register Lua scripts with Redis
 subtract_script = db.register_script(LUA_SUBTRACT_STOCK)
+subtract_batch_script = db.register_script(LUA_SUBTRACT_STOCK_BATCH)
 add_script = db.register_script(LUA_ADD_STOCK)
 
 
@@ -113,6 +124,10 @@ def remove_stock(item_id: str, amount: int):
         return Response(f"Item: {item_id} stock updated to: {new_stock}", status=200)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
+
+# Start the SAGA stream consumer thread (Steps 2-5)
+from stream_consumer import start_consumer
+start_consumer()
 
 
 if __name__ == '__main__':
