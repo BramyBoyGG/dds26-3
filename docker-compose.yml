@@ -13,15 +13,22 @@ services:
       - payment-service
 
   order-service:
-    build: ./order
+    build:
+      context: .
+      dockerfile: order/Dockerfile
     image: order:latest
     environment:
       - GATEWAY_URL=http://gateway:80
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    # Single worker so the consumer thread and checkout endpoint share the
+    # same process.  Increase workers only after switching to Redis polling
+    # (already done) and verifying correctness under load.
+    command: gunicorn -b 0.0.0.0:5000 -w 1 --timeout 60 --log-level=info app:app
     env_file:
       - env/order_redis.env
     depends_on:
       - order-db
+      - stock-db
+      - payment-db
 
   order-db:
     image: redis:7.2-bookworm
