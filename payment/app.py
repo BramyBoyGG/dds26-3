@@ -88,13 +88,15 @@ end
 -- msgspec encodes Struct as a msgpack array, so [credit_value]
 -- We use cmsgpack to decode/encode
 local decoded = cmsgpack.unpack(data)
-local credit = decoded[1]
+if decoded.credit == nil then
+    decoded.credit = 0
+end
 
-if credit < amount then
+if decoded.credit < amount then
     return 0
 end
 
-decoded[1] = credit - amount
+decoded.credit = decoded.credit - amount
 redis.call('SET', key, cmsgpack.pack(decoded))
 return 1
 """
@@ -106,12 +108,17 @@ local key = KEYS[1]
 local amount = tonumber(ARGV[1])
 
 local data = redis.call('GET', key)
+local decoded
 if not data then
     return -1
+else
+    decoded = cmsgpack.unpack(data)
+    if decoded.credit == nil then
+        decoded.credit = 0
+    end
 end
+decoded.credit = decoded.credit + amount
 
-local decoded = cmsgpack.unpack(data)
-decoded[1] = decoded[1] + amount
 redis.call('SET', key, cmsgpack.pack(decoded))
 return 1
 """
