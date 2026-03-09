@@ -13,7 +13,9 @@ services:
       - payment-service
 
   order-service:
-    build: ./order
+    build:
+      context: .
+      dockerfile: order/Dockerfile
     image: order:latest
     environment:
       - GATEWAY_URL=http://gateway:80
@@ -22,6 +24,8 @@ services:
       - env/order_redis.env
     depends_on:
       - order-db
+      - stock-db
+      - payment-db
 
   order-db:
     image: redis:7.2-bookworm
