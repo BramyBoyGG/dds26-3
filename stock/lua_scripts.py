@@ -4,7 +4,7 @@ local amount = tonumber(ARGV[1])
 
 local value = redis.call('GET', key)
 if not value then
-    return 0
+    return -2
 end
 
 -- Decode msgpack manually (simplified for StockValue struct)
@@ -71,7 +71,7 @@ local amount = tonumber(ARGV[1])
 
 local value = redis.call('GET', key)
 if not value then
-    return 0
+    return -1
 end
 
 -- Decode msgpack

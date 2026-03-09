@@ -104,7 +104,7 @@ def add_stock(item_id: str, amount: int):
     amount = int(amount)
     try:
         new_stock = add_script(keys=[item_id], args=[amount])
-        if new_stock == 0:
+        if new_stock == -1:
             abort(400, f"Item: {item_id} not found!")
         return Response(f"Item: {item_id} stock updated to: {new_stock}", status=200)
     except redis.exceptions.RedisError:
@@ -116,7 +116,7 @@ def remove_stock(item_id: str, amount: int):
     amount = int(amount)
     try:
         new_stock = subtract_script(keys=[item_id], args=[amount])
-        if new_stock == 0:
+        if new_stock == -2:
             abort(400, f"Item: {item_id} not found!")
         elif new_stock == -1:
             abort(400, f"Item: {item_id} stock cannot get reduced below zero!")
