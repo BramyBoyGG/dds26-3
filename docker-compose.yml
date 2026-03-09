@@ -11,6 +11,7 @@ services:
       - order-service
       - stock-service
       - payment-service
+    restart: always
 
   order-service:
     build:
@@ -26,12 +27,14 @@ services:
       - order-db
       - stock-db
       - payment-db
+    restart: always
 
   order-db:
     image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    command: redis-server --requirepass redis --maxmemory 512mb --appendonly yes
     ports:
       - "6380:6379"
+    restart: always
 
   stock-service:
     build:
@@ -49,12 +52,14 @@ services:
     depends_on:
       - stock-db
       - order-db
+    restart: always
 
   stock-db:
     image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    command: redis-server --requirepass redis --maxmemory 512mb --appendonly yes
     ports:
       - "6381:6379"
+    restart: always
 
   payment-service:
     build:
@@ -72,7 +77,9 @@ services:
     depends_on:
       - payment-db
       - order-db
+    restart: always
 
   payment-db:
     image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    command: redis-server --requirepass redis --maxmemory 512mb --appendonly yes
+    restart: always
