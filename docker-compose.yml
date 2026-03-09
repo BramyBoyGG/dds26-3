@@ -27,6 +27,8 @@ services:
       - order-db
       - stock-db
       - payment-db
+    deploy:
+      replicas: 4
     restart: always
 
   order-db:
@@ -52,6 +54,8 @@ services:
     depends_on:
       - stock-db
       - order-db
+    deploy:
+      replicas: 4
     restart: always
 
   stock-db:
@@ -77,6 +81,8 @@ services:
     depends_on:
       - payment-db
       - order-db
+    deploy:
+      replicas: 4
     restart: always
 
   payment-db:

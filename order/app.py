@@ -453,7 +453,7 @@ def checkout(order_id: str):
     order_entry: OrderValue = get_order_from_db(order_id)
 
     if order_entry.paid:
-        return abort(400, "Order already paid")
+        return Response(f"Order paid", status=200)
 
     # Aggregate item quantities (in case the same item was added multiple times)
     items_quantities: dict[str, int] = defaultdict(int)
