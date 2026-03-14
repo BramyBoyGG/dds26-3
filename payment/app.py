@@ -1,5 +1,4 @@
 import logging
-import os
 import atexit
 import uuid
 import threading
@@ -10,6 +9,7 @@ from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
 # Import common SAGA utilities
+from common.redis_client import get_redis_connection
 from common.protocol import (
     PAYMENT_COMMANDS_STREAM,
     PAYMENT_CONSUMER_GROUP,
@@ -36,19 +36,15 @@ app = Flask("payment-service")
 
 # --- Redis connections ---
 # Own database (payment-db): stores user data + payment-commands stream
-db: redis.Redis = redis.Redis(
-    host=os.environ['REDIS_HOST'],
-    port=int(os.environ['REDIS_PORT']),
-    password=os.environ['REDIS_PASSWORD'],
-    db=int(os.environ['REDIS_DB']),
+db: redis.Redis = get_redis_connection(
+    "REDIS_MASTER_NAME", "REDIS_PASSWORD",
+    "REDIS_HOST", "REDIS_PORT", "REDIS_DB",
 )
 
 # Order database (order-db): for publishing tx-responses back to the orchestrator
-order_db: redis.Redis = redis.Redis(
-    host=os.environ.get('ORDER_REDIS_HOST', 'order-db'),
-    port=int(os.environ.get('ORDER_REDIS_PORT', '6379')),
-    password=os.environ.get('ORDER_REDIS_PASSWORD', 'redis'),
-    db=int(os.environ.get('ORDER_REDIS_DB', '0')),
+order_db: redis.Redis = get_redis_connection(
+    "ORDER_REDIS_MASTER_NAME", "ORDER_REDIS_PASSWORD",
+    "ORDER_REDIS_HOST", "ORDER_REDIS_PORT", "ORDER_REDIS_DB",
 )
 
 

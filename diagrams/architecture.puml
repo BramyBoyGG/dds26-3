@@ -12,19 +12,40 @@ package "API Gateway" {
     [nginx] as GW
 }
 
+package "Sentinel Cluster" {
+    [sentinel-1] as S1
+    [sentinel-2] as S2
+    [sentinel-3] as S3
+}
+
 package "Order Service  - Saga Orchestrator" {
     [Flask App\nREST API + Transaction State Machine\n+ consumer thread (tx-responses)] as OrderApp
-    database "order-db (Redis)\norders + tx log\n+ stream: tx-responses" as OrderDB
+}
+
+package "order-db" {
+    database "order-master (Redis)\norders + tx log\n+ stream: tx-responses" as OrderDB
+    database "order-replica" as OrderReplica
+    OrderDB -right-> OrderReplica : async\nreplication
 }
 
 package "Stock Service" {
     [Flask App\nREST API\n+ consumer thread (stock-commands)] as StockApp
-    database "stock-db (Redis)\nitems\n+ stream: stock-commands" as StockDB
+}
+
+package "stock-db" {
+    database "stock-master (Redis)\nitems\n+ stream: stock-commands" as StockDB
+    database "stock-replica" as StockReplica
+    StockDB -right-> StockReplica : async\nreplication
 }
 
 package "Payment Service" {
     [Flask App\nREST API\n+ consumer thread (payment-commands)] as PayApp
-    database "payment-db (Redis)\nusers\n+ stream: payment-commands" as PayDB
+}
+
+package "payment-db" {
+    database "payment-master (Redis)\nusers\n+ stream: payment-commands" as PayDB
+    database "payment-replica" as PayReplica
+    PayDB -right-> PayReplica : async\nreplication
 }
 
 ' Client -> Gateway -> Services (REST for CRUD)
@@ -33,19 +54,24 @@ GW --> OrderApp : /orders/*
 GW --> StockApp : /stock/*
 GW --> PayApp : /payment/*
 
-' Order reads/writes its own DB
-OrderApp --> OrderDB : orders + tx state\n+ consume tx-responses
+' Sentinel monitors all masters
+S1 ..> OrderDB : monitor
+S1 ..> StockDB : monitor
+S1 ..> PayDB : monitor
+
+' Services connect via Sentinel discovery
+OrderApp --> OrderDB : orders + tx state\n+ consume tx-responses\n(via Sentinel)
 
 ' Order publishes commands to other services' Redis
-OrderApp ..> StockDB : XADD stock-commands\n(RESERVE / COMPENSATE)
-OrderApp ..> PayDB : XADD payment-commands\n(DEDUCT / REFUND)
+OrderApp ..> StockDB : XADD stock-commands\n(RESERVE / COMPENSATE)\n(via Sentinel)
+OrderApp ..> PayDB : XADD payment-commands\n(DEDUCT / REFUND)\n(via Sentinel)
 
 ' Stock reads commands from its own DB, writes responses to order-db
-StockApp --> StockDB : data + consume stock-commands
-StockApp ..> OrderDB : XADD tx-responses
+StockApp --> StockDB : data + consume stock-commands\n(via Sentinel)
+StockApp ..> OrderDB : XADD tx-responses\n(via Sentinel)
 
 ' Payment reads commands from its own DB, writes responses to order-db
-PayApp --> PayDB : data + consume payment-commands
-PayApp ..> OrderDB : XADD tx-responses
+PayApp --> PayDB : data + consume payment-commands\n(via Sentinel)
+PayApp ..> OrderDB : XADD tx-responses\n(via Sentinel)
 
 @enduml

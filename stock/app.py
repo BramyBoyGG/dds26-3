@@ -1,5 +1,4 @@
 import logging
-import os
 import atexit
 import uuid
 
@@ -9,6 +8,7 @@ from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
 from lua_scripts import LUA_SUBTRACT_STOCK, LUA_SUBTRACT_STOCK_BATCH, LUA_ADD_STOCK
+from common.redis_client import get_redis_connection
 # NOTE: stream_consumer imports from this module (app) at runtime, so avoid
 # importing stream_consumer at the top level to prevent circular import issues.
 
@@ -17,16 +17,14 @@ DB_ERROR_STR = "DB error"
 
 app = Flask("stock-service")
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
+db: redis.Redis = get_redis_connection(
+    "REDIS_MASTER_NAME", "REDIS_PASSWORD",
+    "REDIS_HOST", "REDIS_PORT", "REDIS_DB",
+)
 
-order_db: redis.Redis = redis.Redis(
-    host=os.environ.get('ORDER_REDIS_HOST', 'order-db'),
-    port=int(os.environ.get('ORDER_REDIS_PORT', '6379')),
-    password=os.environ.get('ORDER_REDIS_PASSWORD', 'redis'),
-    db=int(os.environ.get('ORDER_REDIS_DB', '0')),
+order_db: redis.Redis = get_redis_connection(
+    "ORDER_REDIS_MASTER_NAME", "ORDER_REDIS_PASSWORD",
+    "ORDER_REDIS_HOST", "ORDER_REDIS_PORT", "ORDER_REDIS_DB",
 )
 
 

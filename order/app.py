@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import atexit
 import random
 import threading
@@ -13,6 +12,7 @@ import redis
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
+from common.redis_client import get_redis_connection
 from common.protocol import (
     STOCK_COMMANDS_STREAM, PAYMENT_COMMANDS_STREAM, TX_RESPONSES_STREAM,
     TX_RESPONSES_CONSUMER_GROUP,
@@ -39,27 +39,21 @@ logger = setup_logging("order-service")
 
 # ── Redis connections ────────────────────────────────────────────────────────
 # order-db: stores orders, the transaction log, and the tx-responses stream
-db: redis.Redis = redis.Redis(
-    host=os.environ['REDIS_HOST'],
-    port=int(os.environ['REDIS_PORT']),
-    password=os.environ['REDIS_PASSWORD'],
-    db=int(os.environ['REDIS_DB']),
+db: redis.Redis = get_redis_connection(
+    "REDIS_MASTER_NAME", "REDIS_PASSWORD",
+    "REDIS_HOST", "REDIS_PORT", "REDIS_DB",
 )
 
 # stock-db: Order publishes RESERVE_STOCK / COMPENSATE_STOCK here
-stock_db: redis.Redis = redis.Redis(
-    host=os.environ['STOCK_REDIS_HOST'],
-    port=int(os.environ.get('STOCK_REDIS_PORT', '6379')),
-    password=os.environ.get('STOCK_REDIS_PASSWORD', 'redis'),
-    db=int(os.environ.get('STOCK_REDIS_DB', '0')),
+stock_db: redis.Redis = get_redis_connection(
+    "STOCK_REDIS_MASTER_NAME", "STOCK_REDIS_PASSWORD",
+    "STOCK_REDIS_HOST", "STOCK_REDIS_PORT", "STOCK_REDIS_DB",
 )
 
 # payment-db: Order publishes DEDUCT_PAYMENT here
-payment_db: redis.Redis = redis.Redis(
-    host=os.environ['PAYMENT_REDIS_HOST'],
-    port=int(os.environ.get('PAYMENT_REDIS_PORT', '6379')),
-    password=os.environ.get('PAYMENT_REDIS_PASSWORD', 'redis'),
-    db=int(os.environ.get('PAYMENT_REDIS_DB', '0')),
+payment_db: redis.Redis = get_redis_connection(
+    "PAYMENT_REDIS_MASTER_NAME", "PAYMENT_REDIS_PASSWORD",
+    "PAYMENT_REDIS_HOST", "PAYMENT_REDIS_PORT", "PAYMENT_REDIS_DB",
 )
 
 
