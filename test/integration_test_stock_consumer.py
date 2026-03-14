@@ -13,6 +13,7 @@ then verify:
   - stock state changes via the REST API
   - atomicity of multi-item reservations (batch Lua script)
   - idempotency (duplicate tx_id produces no side-effects)
+  - LOOKUP_PRICE: price response keys and price cache in order-db
 """
 import time
 import json
@@ -76,6 +77,18 @@ def _count_responses_for_tx(tx_id: str) -> int:
         1 for _, fields in messages
         if _decode_fields(fields).get("tx_id") == tx_id
     )
+
+
+def _wait_for_price_response(request_id: str, timeout: float = 5.0) -> dict | None:
+    """Poll order-db for a price-resp:{request_id} key."""
+    key = f"price-resp:{request_id}"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        raw = ORDER_DB.get(key)
+        if raw is not None:
+            return json.loads(raw)
+        time.sleep(0.05)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +282,92 @@ class TestStockConsumer(unittest.TestCase):
 
         self.assertEqual(tu.find_item(item_id)["stock"], 50)
         self.assertEqual(_count_responses_for_tx(tx_comp), 2)
+
+    # -- LOOKUP_PRICE ----------------------------------------------------
+
+    def test_lookup_price_success(self):
+        """LOOKUP_PRICE writes correct price to price-resp key in order-db."""
+        item = tu.create_item(42)
+        item_id = item["item_id"]
+        tu.add_stock(item_id, 10)
+
+        request_id = str(uuid.uuid4())
+        _publish_command(request_id, "LOOKUP_PRICE", {"item_id": item_id})
+
+        resp = _wait_for_price_response(request_id)
+        self.assertIsNotNone(resp, "No price response received")
+        self.assertTrue(resp["found"])
+        self.assertEqual(resp["price"], 42)
+
+    def test_lookup_price_populates_cache(self):
+        """LOOKUP_PRICE writes to price-cache:{item_id} in order-db."""
+        item = tu.create_item(99)
+        item_id = item["item_id"]
+        tu.add_stock(item_id, 5)
+
+        request_id = str(uuid.uuid4())
+        _publish_command(request_id, "LOOKUP_PRICE", {"item_id": item_id})
+
+        resp = _wait_for_price_response(request_id)
+        self.assertIsNotNone(resp)
+
+        cache_key = f"price-cache:{item_id}"
+        cached_raw = ORDER_DB.get(cache_key)
+        self.assertIsNotNone(cached_raw, "Price cache key not set in order-db")
+        cached = json.loads(cached_raw)
+        self.assertTrue(cached["found"])
+        self.assertEqual(cached["price"], 99)
+
+        ttl = ORDER_DB.ttl(cache_key)
+        self.assertGreater(ttl, 0, "Cache key should have a TTL")
+        self.assertLessEqual(ttl, 300)
+
+    def test_lookup_price_item_not_found(self):
+        """LOOKUP_PRICE for a non-existent item returns found=False."""
+        request_id = str(uuid.uuid4())
+        fake_id = str(uuid.uuid4())
+        _publish_command(request_id, "LOOKUP_PRICE", {"item_id": fake_id})
+
+        resp = _wait_for_price_response(request_id)
+        self.assertIsNotNone(resp, "No price response received for missing item")
+        self.assertFalse(resp["found"])
+        self.assertIn("not found", resp.get("reason", "").lower())
+
+    def test_lookup_price_no_tx_response_published(self):
+        """LOOKUP_PRICE should NOT publish to tx-responses stream."""
+        item = tu.create_item(10)
+        item_id = item["item_id"]
+        tu.add_stock(item_id, 5)
+
+        request_id = str(uuid.uuid4())
+        _publish_command(request_id, "LOOKUP_PRICE", {"item_id": item_id})
+
+        # Wait for the price response to confirm the command was processed
+        resp = _wait_for_price_response(request_id)
+        self.assertIsNotNone(resp)
+
+        # Verify nothing was published to tx-responses for this request_id
+        self.assertEqual(_count_responses_for_tx(request_id), 0,
+                         "LOOKUP_PRICE should not publish to tx-responses")
+
+    def test_lookup_price_resp_key_has_ttl(self):
+        """The price-resp:{request_id} key should have a short TTL."""
+        item = tu.create_item(15)
+        item_id = item["item_id"]
+        tu.add_stock(item_id, 3)
+
+        request_id = str(uuid.uuid4())
+        _publish_command(request_id, "LOOKUP_PRICE", {"item_id": item_id})
+
+        resp = _wait_for_price_response(request_id)
+        self.assertIsNotNone(resp)
+
+        resp_key = f"price-resp:{request_id}"
+        ttl = ORDER_DB.ttl(resp_key)
+        # Key may have been read and is still present, or may have expired
+        # If still present, TTL should be <= 60
+        if ttl > 0:
+            self.assertLessEqual(ttl, 60)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import atexit
@@ -8,7 +9,6 @@ import uuid
 from collections import defaultdict
 
 import redis
-import requests
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
@@ -17,10 +17,12 @@ from common.protocol import (
     STOCK_COMMANDS_STREAM, PAYMENT_COMMANDS_STREAM, TX_RESPONSES_STREAM,
     TX_RESPONSES_CONSUMER_GROUP,
     CMD_RESERVE_STOCK, CMD_COMPENSATE_STOCK, CMD_DEDUCT_PAYMENT,
+    CMD_LOOKUP_PRICE,
     TX_STARTED, TX_RESERVING_STOCK, TX_DEDUCTING_PAYMENT,
     TX_COMPENSATING_STOCK, TX_COMPLETED, TX_ABORTED, TERMINAL_STATES,
     TX_LOG_PREFIX, RESPONSE_TIMEOUT_S, STATUS_SUCCESS,
     PENDING_CLAIM_MIN_IDLE_MS,
+    PRICE_RESPONSE_PREFIX, PRICE_CACHE_PREFIX, PRICE_CACHE_TTL, PRICE_RESPONSE_TTL,
 )
 from common.stream_helpers import (
     create_consumer_group, publish_message, read_messages,
@@ -31,9 +33,6 @@ from common.logging_utils import setup_logging, get_consumer_id, log_tx, log_tx_
 
 
 DB_ERROR_STR = "DB error"
-REQ_ERROR_STR = "Requests error"
-
-GATEWAY_URL = os.environ['GATEWAY_URL']
 
 app = Flask("order-service")
 logger = setup_logging("order-service")
@@ -342,24 +341,6 @@ def get_order_from_db(order_id: str) -> OrderValue | None:
     return entry
 
 
-def send_post_request(url: str):
-    try:
-        response = requests.post(url)
-    except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
-    else:
-        return response
-
-
-def send_get_request(url: str):
-    try:
-        response = requests.get(url)
-    except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
-    else:
-        return response
-
-
 # ── Flask endpoints ───────────────────────────────────────────────────────────
 
 @app.post('/create/<user_id>')
@@ -413,21 +394,78 @@ def find_order(order_id: str):
 
 @app.post('/addItem/<order_id>/<item_id>/<quantity>')
 def add_item(order_id: str, item_id: str, quantity: int):
+    quantity = int(quantity)
+
+    # Validate order exists and is not yet paid
     order_entry: OrderValue = get_order_from_db(order_id)
-    item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
-    if item_reply.status_code != 200:
+    if order_entry.paid:
+        abort(400, f"Order: {order_id} is already paid!")
+
+    # --- Get price (cache → stream fallback) ---
+    cache_key = f"{PRICE_CACHE_PREFIX}:{item_id}"
+    cached = db.get(cache_key)
+    if cached is not None:
+        price_data = json.loads(cached)
+    else:
+        # Publish LOOKUP_PRICE command and poll for the response
+        request_id = str(uuid.uuid4())
+        fields = encode_command(
+            tx_id=request_id,
+            command=CMD_LOOKUP_PRICE,
+            payload={"item_id": item_id},
+        )
+        publish_message(stock_db, STOCK_COMMANDS_STREAM, fields)
+
+        resp_key = f"{PRICE_RESPONSE_PREFIX}:{request_id}"
+        deadline = time.monotonic() + RESPONSE_TIMEOUT_S
+        price_data = None
+        while time.monotonic() < deadline:
+            raw = db.get(resp_key)
+            if raw is not None:
+                price_data = json.loads(raw)
+                db.delete(resp_key)
+                break
+            time.sleep(0.05)
+
+        if price_data is None:
+            abort(400, f"Timeout looking up price for item {item_id}")
+
+    if not price_data.get("found"):
         abort(400, f"Item: {item_id} does not exist!")
-    item_json: dict = item_reply.json()
-    order_entry.items.append((item_id, int(quantity)))
-    order_entry.total_cost += int(quantity) * item_json["price"]
-    try:
-        db.set(order_id, msgpack.encode(order_entry))
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return Response(
-        f"Item: {item_id} added to: {order_id} price updated to: {order_entry.total_cost}",
-        status=200,
-    )
+
+    item_price = price_data["price"]
+
+    # --- Atomic read-modify-write with WATCH/MULTI ---
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            with db.pipeline() as pipe:
+                pipe.watch(order_id)
+                raw = pipe.get(order_id)
+                if raw is None:
+                    abort(400, f"Order: {order_id} not found!")
+                order = msgpack.decode(raw, type=OrderValue)
+                if order.paid:
+                    abort(400, f"Order: {order_id} is already paid!")
+
+                updated = OrderValue(
+                    paid=order.paid,
+                    items=order.items + [(item_id, quantity)],
+                    user_id=order.user_id,
+                    total_cost=order.total_cost + quantity * item_price,
+                )
+                pipe.multi()
+                pipe.set(order_id, msgpack.encode(updated))
+                pipe.execute()
+
+            return Response(
+                f"Item: {item_id} added to: {order_id} price updated to: {updated.total_cost}",
+                status=200,
+            )
+        except redis.WatchError:
+            continue
+
+    abort(400, f"Could not update order {order_id}: too much contention")
 
 
 @app.post('/checkout/<order_id>')
