@@ -11,6 +11,7 @@ services:
       - order-service
       - stock-service
       - payment-service
+    restart: always
 
   order-service:
     build:
@@ -19,6 +20,13 @@ services:
     image: order:latest
     environment:
       - GATEWAY_URL=http://gateway:80
+      - REDIS_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      - REDIS_MASTER_NAME=order-master
+      - REDIS_PASSWORD=redis
+      - STOCK_REDIS_MASTER_NAME=stock-master
+      - STOCK_REDIS_PASSWORD=redis
+      - PAYMENT_REDIS_MASTER_NAME=payment-master
+      - PAYMENT_REDIS_PASSWORD=redis
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - env/order_redis.env
@@ -26,12 +34,37 @@ services:
       - order-db
       - stock-db
       - payment-db
+      - sentinel-1
+      - sentinel-2
+      - sentinel-3
+    deploy:
+      replicas: 4
+    restart: always
 
   order-db:
     image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    command: redis-server --requirepass redis --maxmemory 512mb --appendonly yes
     ports:
       - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    restart: always
+
+  order-db-replica:
+    image: redis:7.2-bookworm
+    command: redis-server --requirepass redis --masterauth redis --maxmemory 512mb --appendonly yes --replicaof order-db 6379
+    depends_on:
+      order-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    restart: always
 
   stock-service:
     build:
@@ -42,6 +75,10 @@ services:
     env_file:
       - env/stock_redis.env
     environment:
+      - REDIS_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      - REDIS_MASTER_NAME=stock-master
+      - REDIS_PASSWORD=redis
+      - ORDER_REDIS_MASTER_NAME=order-master
       - ORDER_REDIS_HOST=order-db
       - ORDER_REDIS_PORT=6379
       - ORDER_REDIS_PASSWORD=redis
@@ -49,12 +86,37 @@ services:
     depends_on:
       - stock-db
       - order-db
+      - sentinel-1
+      - sentinel-2
+      - sentinel-3
+    deploy:
+      replicas: 4
+    restart: always
 
   stock-db:
     image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    command: redis-server --requirepass redis --maxmemory 512mb --appendonly yes
     ports:
       - "6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    restart: always
+
+  stock-db-replica:
+    image: redis:7.2-bookworm
+    command: redis-server --requirepass redis --masterauth redis --maxmemory 512mb --appendonly yes --replicaof stock-db 6379
+    depends_on:
+      stock-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    restart: always
 
   payment-service:
     build:
@@ -65,6 +127,10 @@ services:
     env_file:
       - env/payment_redis.env
     environment:
+      - REDIS_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      - REDIS_MASTER_NAME=payment-master
+      - REDIS_PASSWORD=redis
+      - ORDER_REDIS_MASTER_NAME=order-master
       - ORDER_REDIS_HOST=order-db
       - ORDER_REDIS_PORT=6379
       - ORDER_REDIS_PASSWORD=redis
@@ -72,7 +138,100 @@ services:
     depends_on:
       - payment-db
       - order-db
+      - sentinel-1
+      - sentinel-2
+      - sentinel-3
+    deploy:
+      replicas: 4
+    restart: always
 
   payment-db:
     image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    command: redis-server --requirepass redis --maxmemory 512mb --appendonly yes
+    ports:
+      - "6382:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    restart: always
+
+  payment-db-replica:
+    image: redis:7.2-bookworm
+    command: redis-server --requirepass redis --masterauth redis --maxmemory 512mb --appendonly yes --replicaof payment-db 6379
+    depends_on:
+      payment-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    restart: always
+
+  sentinel-1:
+    image: redis:7.2-bookworm
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel/sentinel-1.conf:/etc/redis/sentinel.conf
+    depends_on:
+      order-db:
+        condition: service_healthy
+      order-db-replica:
+        condition: service_healthy
+      stock-db:
+        condition: service_healthy
+      stock-db-replica:
+        condition: service_healthy
+      payment-db:
+        condition: service_healthy
+      payment-db-replica:
+        condition: service_healthy
+    ports:
+      - "26379:26379"
+    restart: always
+
+  sentinel-2:
+    image: redis:7.2-bookworm
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel/sentinel-2.conf:/etc/redis/sentinel.conf
+    depends_on:
+      order-db:
+        condition: service_healthy
+      order-db-replica:
+        condition: service_healthy
+      stock-db:
+        condition: service_healthy
+      stock-db-replica:
+        condition: service_healthy
+      payment-db:
+        condition: service_healthy
+      payment-db-replica:
+        condition: service_healthy
+    ports:
+      - "26380:26379"
+    restart: always
+
+  sentinel-3:
+    image: redis:7.2-bookworm
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel/sentinel-3.conf:/etc/redis/sentinel.conf
+    depends_on:
+      order-db:
+        condition: service_healthy
+      order-db-replica:
+        condition: service_healthy
+      stock-db:
+        condition: service_healthy
+      stock-db-replica:
+        condition: service_healthy
+      payment-db:
+        condition: service_healthy
+      payment-db-replica:
+        condition: service_healthy
+    ports:
+      - "26381:26379"
+    restart: always

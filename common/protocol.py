@@ -52,6 +52,7 @@ TX_RESPONSES_CONSUMER_GROUP = "order-service-group"
 # Stock commands
 CMD_RESERVE_STOCK = "RESERVE_STOCK"       # Subtract stock for all items in the order
 CMD_COMPENSATE_STOCK = "COMPENSATE_STOCK" # Roll back a previous reservation (add stock back)
+CMD_LOOKUP_PRICE = "LOOKUP_PRICE"         # Look up item price (non-saga, request/response via key)
 
 # Payment commands
 CMD_DEDUCT_PAYMENT = "DEDUCT_PAYMENT"     # Subtract credit from user
@@ -120,10 +121,23 @@ TX_LOG_PREFIX = "tx"
 IDEMPOTENCY_PREFIX = "processed"
 
 # ---------------------------------------------------------------------------
+# Price lookup key prefixes
+# ---------------------------------------------------------------------------
+# Used by the LOOKUP_PRICE flow: order service requests a price via streams,
+# stock service writes the result to a key in order-db.
+# Example keys:  price-resp:550e8400-...   price-cache:item-42
+# ---------------------------------------------------------------------------
+
+PRICE_RESPONSE_PREFIX = "price-resp"
+PRICE_CACHE_PREFIX = "price-cache"
+
+# ---------------------------------------------------------------------------
 # Default TTLs and timeouts (in seconds)
 # ---------------------------------------------------------------------------
 
 IDEMPOTENCY_TTL = 3600          # How long to remember a processed tx_id (1 hour)
+PRICE_CACHE_TTL = 300           # How long to cache item prices in order-db (5 min)
+PRICE_RESPONSE_TTL = 60         # TTL for per-request price response keys (1 min)
 STREAM_BLOCK_MS = 5000          # How long XREADGROUP blocks waiting for messages (5s)
 STREAM_READ_COUNT = 10          # Max messages to read per XREADGROUP call
 RESPONSE_TIMEOUT_S = 30         # How long the checkout endpoint waits for saga completion
