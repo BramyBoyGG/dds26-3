@@ -111,7 +111,7 @@ The checkout endpoint acts as the 2PC coordinator:
 
 ```bash
 cd 2pc
-docker compose up --build
+docker-compose up --build
 ```
 
 This starts 7 containers:
@@ -124,13 +124,13 @@ Wait until you see all services are up (gunicorn workers booting).
 ### Stop the System
 
 ```bash
-docker compose down
+docker-compose down
 ```
 
 To also wipe all Redis data:
 
 ```bash
-docker compose down -v
+docker-compose down -v
 ```
 
 ---
@@ -146,7 +146,7 @@ The tests are in the `test/` folder and verify:
 
 ```bash
 cd 2pc
-docker compose up --build
+docker-compose up --build
 ```
 
 ### Step 2: Run tests (in a separate terminal)
@@ -236,5 +236,5 @@ Reservation records have a **TTL (60 seconds)** — if the coordinator crashes a
 
 
 cd 2pc
-docker compose up --build       # Terminal 1
+docker-compose up --build       # Terminal 1
 python3 -m unittest test.test_microservices -v  # Terminal 2
