@@ -38,13 +38,11 @@ app = Flask("payment-service")
 # Own database (payment-db): stores user data + payment-commands stream
 db: redis.Redis = get_redis_connection(
     "REDIS_MASTER_NAME", "REDIS_PASSWORD",
-    "REDIS_HOST", "REDIS_PORT", "REDIS_DB",
 )
 
 # Order database (order-db): for publishing tx-responses back to the orchestrator
 order_db: redis.Redis = get_redis_connection(
     "ORDER_REDIS_MASTER_NAME", "ORDER_REDIS_PASSWORD",
-    "ORDER_REDIS_HOST", "ORDER_REDIS_PORT", "ORDER_REDIS_DB",
 )
 
 
