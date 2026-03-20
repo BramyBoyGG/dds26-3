@@ -19,12 +19,10 @@ app = Flask("stock-service")
 
 db: redis.Redis = get_redis_connection(
     "REDIS_MASTER_NAME", "REDIS_PASSWORD",
-    "REDIS_HOST", "REDIS_PORT", "REDIS_DB",
 )
 
 order_db: redis.Redis = get_redis_connection(
     "ORDER_REDIS_MASTER_NAME", "ORDER_REDIS_PASSWORD",
-    "ORDER_REDIS_HOST", "ORDER_REDIS_PORT", "ORDER_REDIS_DB",
 )
 
 

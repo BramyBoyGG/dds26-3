@@ -41,19 +41,16 @@ logger = setup_logging("order-service")
 # order-db: stores orders, the transaction log, and the tx-responses stream
 db: redis.Redis = get_redis_connection(
     "REDIS_MASTER_NAME", "REDIS_PASSWORD",
-    "REDIS_HOST", "REDIS_PORT", "REDIS_DB",
 )
 
 # stock-db: Order publishes RESERVE_STOCK / COMPENSATE_STOCK here
 stock_db: redis.Redis = get_redis_connection(
     "STOCK_REDIS_MASTER_NAME", "STOCK_REDIS_PASSWORD",
-    "STOCK_REDIS_HOST", "STOCK_REDIS_PORT", "STOCK_REDIS_DB",
 )
 
 # payment-db: Order publishes DEDUCT_PAYMENT here
 payment_db: redis.Redis = get_redis_connection(
     "PAYMENT_REDIS_MASTER_NAME", "PAYMENT_REDIS_PASSWORD",
-    "PAYMENT_REDIS_HOST", "PAYMENT_REDIS_PORT", "PAYMENT_REDIS_DB",
 )
 
 
