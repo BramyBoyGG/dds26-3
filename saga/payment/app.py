@@ -1,40 +1,45 @@
+"""
+Payment Service - Refactored to use the Orchestrator library.
+
+This service demonstrates how the SagaParticipant class simplifies
+participating in SAGA workflows. The service only needs to:
+1. Register handlers for each command it handles
+2. Start the participant
+
+All stream consumption, idempotency, and response publishing is handled
+by the SagaParticipant.
+"""
+
 import logging
 import atexit
 import uuid
-import threading
 
 import redis
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
-# Import common SAGA utilities
+# Import from orchestrator library
+from orchestrator import SagaParticipant
+
 from common.redis_client import get_redis_connection
 from common.protocol import (
     PAYMENT_COMMANDS_STREAM,
     PAYMENT_CONSUMER_GROUP,
-    TX_RESPONSES_STREAM,
     CMD_DEDUCT_PAYMENT,
     CMD_REFUND_PAYMENT,
     STATUS_SUCCESS,
     STATUS_FAILURE,
 )
-from common.stream_helpers import (
-    create_consumer_group,
-    publish_message,
-    read_messages,
-    ack_message,
-    claim_stale_pending,
-)
-from common.serialization import decode_command, encode_response
-from common.idempotency import is_processed, mark_processed, get_cached_result
-from common.logging_utils import setup_logging, get_consumer_id, log_tx
+from common.logging_utils import setup_logging
+
 
 DB_ERROR_STR = "DB error"
 
 app = Flask("payment-service")
+logger = setup_logging("payment-service")
 
-# --- Redis connections ---
+# ── Redis connections ────────────────────────────────────────────────────────
 # Own database (payment-db): stores user data + payment-commands stream
 db: redis.Redis = get_redis_connection(
     "REDIS_MASTER_NAME", "REDIS_PASSWORD",
@@ -55,19 +60,14 @@ def close_db_connection():
 
 atexit.register(close_db_connection)
 
-# --- Structured logger ---
-saga_logger = setup_logging("payment-service")
 
-# --- Data model ---
-
+# ── Data model ───────────────────────────────────────────────────────────────
 
 class UserValue(Struct):
     credit: int
 
 
-# ---------------------------------------------------------------------------
-# Lua scripts for atomic credit operations
-# ---------------------------------------------------------------------------
+# ── Lua scripts for atomic credit operations ─────────────────────────────────
 
 # Atomic subtract: GET -> decode -> check credit >= amount -> subtract -> SET
 # Returns 1 on success, 0 on insufficient credit, -1 if user not found
@@ -80,9 +80,6 @@ if not data then
     return -1
 end
 
--- msgpack: UserValue has one field (credit), encoded as a fixarray of 1 element
--- msgspec encodes Struct as a msgpack array, so [credit_value]
--- We use cmsgpack to decode/encode
 local decoded = cmsgpack.unpack(data)
 if decoded.credit == nil then
     decoded.credit = 0
@@ -124,9 +121,7 @@ subtract_credit_script = db.register_script(LUA_SUBTRACT_CREDIT)
 add_credit_script = db.register_script(LUA_ADD_CREDIT)
 
 
-# ---------------------------------------------------------------------------
-# Helper: read user from DB
-# ---------------------------------------------------------------------------
+# ── Helper: read user from DB ────────────────────────────────────────────────
 
 def get_user_from_db(user_id: str) -> UserValue | None:
     try:
@@ -139,9 +134,7 @@ def get_user_from_db(user_id: str) -> UserValue | None:
     return entry
 
 
-# ---------------------------------------------------------------------------
-# REST endpoints (kept working for benchmark compatibility)
-# ---------------------------------------------------------------------------
+# ── REST endpoints ───────────────────────────────────────────────────────────
 
 @app.post('/create_user')
 def create_user():
@@ -186,7 +179,6 @@ def add_credit(user_id: str, amount: int):
     result = add_credit_script(keys=[user_id], args=[amount])
     if result == -1:
         abort(400, f"User: {user_id} not found!")
-    # Read back the updated value for the response
     user_entry = get_user_from_db(user_id)
     return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
 
@@ -204,142 +196,56 @@ def remove_credit(user_id: str, amount: int):
     return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
 
 
-# ---------------------------------------------------------------------------
-# SAGA stream handlers
-# ---------------------------------------------------------------------------
+# ── SAGA Participant ─────────────────────────────────────────────────────────
+# Create a SagaParticipant that handles SAGA commands
 
-def handle_deduct_payment(tx_id: str, user_id: str, amount: int) -> dict:
-    """Atomically deduct credit from a user. Returns result dict."""
-    # Idempotency check
-    if is_processed(db, tx_id, CMD_DEDUCT_PAYMENT):
-        cached = get_cached_result(db, tx_id, CMD_DEDUCT_PAYMENT)
-        if cached:
-            return cached
+participant = SagaParticipant(
+    name="payment-service",
+    own_db=db,
+    orchestrator_db=order_db,
+    command_stream=PAYMENT_COMMANDS_STREAM,
+    response_stream="tx-responses",
+    consumer_group=PAYMENT_CONSUMER_GROUP,
+)
+
+
+@participant.handler(CMD_DEDUCT_PAYMENT)
+def handle_deduct_payment(tx_id: str, payload: dict) -> dict:
+    """Atomically deduct credit from a user."""
+    user_id = payload.get("user_id")
+    amount = int(payload.get("amount", 0))
 
     result_code = subtract_credit_script(keys=[user_id], args=[amount])
 
     if result_code == -1:
-        result = {"status": STATUS_FAILURE, "reason": f"User {user_id} not found"}
+        return {"status": STATUS_FAILURE, "reason": f"User {user_id} not found"}
     elif result_code == 0:
-        result = {"status": STATUS_FAILURE, "reason": f"Insufficient credit for user {user_id}"}
+        return {"status": STATUS_FAILURE, "reason": f"Insufficient credit for user {user_id}"}
     else:
-        result = {"status": STATUS_SUCCESS, "reason": ""}
-
-    mark_processed(db, tx_id, CMD_DEDUCT_PAYMENT, result)
-    return result
+        logger.info(f"[{tx_id}] Deducted {amount} from user {user_id}")
+        return {"status": STATUS_SUCCESS, "reason": ""}
 
 
-def handle_refund_payment(tx_id: str, user_id: str, amount: int) -> dict:
+@participant.handler(CMD_REFUND_PAYMENT)
+def handle_refund_payment(tx_id: str, payload: dict) -> dict:
     """Add credit back to a user (compensation). Always succeeds."""
-    # Idempotency check
-    if is_processed(db, tx_id, CMD_REFUND_PAYMENT):
-        cached = get_cached_result(db, tx_id, CMD_REFUND_PAYMENT)
-        if cached:
-            return cached
+    user_id = payload.get("user_id")
+    amount = int(payload.get("amount", 0))
 
     add_credit_script(keys=[user_id], args=[amount])
-    result = {"status": STATUS_SUCCESS, "reason": ""}
-
-    mark_processed(db, tx_id, CMD_REFUND_PAYMENT, result)
-    return result
+    logger.info(f"[{tx_id}] Refunded {amount} to user {user_id}")
+    return {"status": STATUS_SUCCESS, "reason": ""}
 
 
-# ---------------------------------------------------------------------------
-# Stream consumer thread
-# ---------------------------------------------------------------------------
+# ── Application startup ───────────────────────────────────────────────────────
 
-def stream_consumer_loop():
-    """Background thread that consumes payment-commands from payment-db."""
-    consumer_id = get_consumer_id()
-    saga_logger.info(f"Starting stream consumer: {consumer_id}")
-
-    # Create consumer group (idempotent)
-    create_consumer_group(db, PAYMENT_COMMANDS_STREAM, PAYMENT_CONSUMER_GROUP)
-
-    claim_counter = 0
-
-    while True:
-        try:
-            # Periodically claim stale pending messages (crash recovery)
-            claim_counter += 1
-            if claim_counter % 6 == 0:  # Every ~30s (6 * 5s block)
-                stale = claim_stale_pending(
-                    db, PAYMENT_COMMANDS_STREAM, PAYMENT_CONSUMER_GROUP, consumer_id
-                )
-                for msg_id, fields in stale:
-                    _process_message(msg_id, fields, consumer_id)
-
-            # Read new messages (blocks up to 5 seconds)
-            messages = read_messages(
-                db, PAYMENT_COMMANDS_STREAM, PAYMENT_CONSUMER_GROUP, consumer_id
-            )
-
-            for msg_id, fields in messages:
-                _process_message(msg_id, fields, consumer_id)
-
-        except Exception:
-            saga_logger.exception("Error in stream consumer loop")
+def _start_participant() -> None:
+    """Start the saga participant."""
+    participant.start()
+    logger.info("Payment service SAGA participant started")
 
 
-def _process_message(msg_id, fields, consumer_id):
-    """Process a single command message from the payment-commands stream."""
-    try:
-        parsed = decode_command(fields)
-        tx_id = parsed["tx_id"]
-        command = parsed["command"]
-
-        log_tx(saga_logger, tx_id, command, f"Received command")
-
-        if command == CMD_DEDUCT_PAYMENT:
-            user_id = parsed["user_id"]
-            amount = int(parsed["amount"])
-            result = handle_deduct_payment(tx_id, user_id, amount)
-        elif command == CMD_REFUND_PAYMENT:
-            user_id = parsed["user_id"]
-            amount = int(parsed["amount"])
-            result = handle_refund_payment(tx_id, user_id, amount)
-        else:
-            saga_logger.warning(f"Unknown command: {command}")
-            ack_message(db, PAYMENT_COMMANDS_STREAM, PAYMENT_CONSUMER_GROUP, msg_id)
-            return
-
-        # Publish response to tx-responses stream in order-db
-        response_fields = encode_response(
-            tx_id=tx_id,
-            step=command,
-            status=result["status"],
-            reason=result.get("reason", ""),
-        )
-        publish_message(order_db, TX_RESPONSES_STREAM, response_fields)
-
-        log_tx(saga_logger, tx_id, command, f"Result: {result['status']}")
-
-        # Acknowledge the message
-        ack_message(db, PAYMENT_COMMANDS_STREAM, PAYMENT_CONSUMER_GROUP, msg_id)
-
-    except Exception:
-        saga_logger.exception(f"Error processing message {msg_id}")
-
-
-# ---------------------------------------------------------------------------
-# Start the consumer thread when the app loads
-# ---------------------------------------------------------------------------
-
-_consumer_started = False
-
-
-def start_consumer():
-    global _consumer_started
-    if _consumer_started:
-        return
-    _consumer_started = True
-    t = threading.Thread(target=stream_consumer_loop, daemon=True)
-    t.start()
-    saga_logger.info("Payment stream consumer thread started")
-
-
-# Start consumer on import (works with gunicorn workers)
-start_consumer()
+_start_participant()
 
 
 if __name__ == '__main__':
