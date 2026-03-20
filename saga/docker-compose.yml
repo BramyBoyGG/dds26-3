@@ -20,15 +20,6 @@ services:
       context: .
       dockerfile: order/Dockerfile
     image: order:latest
-    environment:
-      - GATEWAY_URL=http://gateway:80
-      - REDIS_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
-      - REDIS_MASTER_NAME=order-master
-      - REDIS_PASSWORD=redis
-      - STOCK_REDIS_MASTER_NAME=stock-master
-      - STOCK_REDIS_PASSWORD=redis
-      - PAYMENT_REDIS_MASTER_NAME=payment-master
-      - PAYMENT_REDIS_PASSWORD=redis
     command: gunicorn -b 0.0.0.0:5000 -w 1 --timeout 30 --log-level=info app:app
     env_file:
       - env/order_redis.env
@@ -74,15 +65,6 @@ services:
     command: gunicorn -b 0.0.0.0:5000 -w 1 --timeout 30 --log-level=info app:app
     env_file:
       - env/stock_redis.env
-    environment:
-      - REDIS_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
-      - REDIS_MASTER_NAME=stock-master
-      - REDIS_PASSWORD=redis
-      - ORDER_REDIS_MASTER_NAME=order-master
-      - ORDER_REDIS_HOST=order-db
-      - ORDER_REDIS_PORT=6379
-      - ORDER_REDIS_PASSWORD=redis
-      - ORDER_REDIS_DB=0
     depends_on:
       - stock-db
       - order-db
@@ -124,15 +106,6 @@ services:
     command: gunicorn -b 0.0.0.0:5000 -w 1 --timeout 30 --log-level=info app:app
     env_file:
       - env/payment_redis.env
-    environment:
-      - REDIS_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
-      - REDIS_MASTER_NAME=payment-master
-      - REDIS_PASSWORD=redis
-      - ORDER_REDIS_MASTER_NAME=order-master
-      - ORDER_REDIS_HOST=order-db
-      - ORDER_REDIS_PORT=6379
-      - ORDER_REDIS_PASSWORD=redis
-      - ORDER_REDIS_DB=0
     depends_on:
       - payment-db
       - order-db
