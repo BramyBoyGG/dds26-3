@@ -171,8 +171,11 @@ def read_messages(
             block=block_ms,
         )
     except redis.exceptions.ResponseError as e:
-        # Handle edge case where stream or group was deleted
-        logger.error(f"Error reading from stream '{stream}': {e}")
+        if "NOGROUP" in str(e):
+            logger.warning(f"Consumer group '{group}' missing on stream '{stream}' — recreating")
+            create_consumer_group(redis_conn, stream, group)
+        else:
+            logger.error(f"Error reading from stream '{stream}': {e}")
         return []
 
     if not response:
