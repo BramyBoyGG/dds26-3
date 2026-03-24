@@ -1,22 +1,20 @@
-"""
-Orchestrator Library - A reusable SAGA orchestration framework.
+"""Saga orchestrator library package.
 
-This library provides a clean abstraction for implementing distributed
-transactions using the SAGA pattern with Redis Streams.
+This package provides a reusable orchestrator implementation for the SAGA pattern
+(with full state logging, retry-safe spans, and compensation) and a participant
+helper for microservices.
 
-Key components:
-- SagaDefinition: Declarative saga step definitions
-- SagaOrchestrator: Executes sagas and handles state transitions
-- SagaParticipant: Base class for services participating in sagas
+Usage:
+    from saga.orchestrator import SagaOrchestrator, SagaDefinition, SagaStep, SagaParticipant
 """
 
-from orchestrator.saga_definition import SagaStep, SagaDefinition
-from orchestrator.orchestrator import SagaOrchestrator
-from orchestrator.participant import SagaParticipant
+from saga.orchestrator.saga import SagaStep, SagaDefinition, SagaResult, SagaOrchestrator
+from saga.orchestrator.participant import SagaParticipant
 
 __all__ = [
     "SagaStep",
     "SagaDefinition",
+    "SagaResult",
     "SagaOrchestrator",
     "SagaParticipant",
 ]

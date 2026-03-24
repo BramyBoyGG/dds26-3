@@ -1,4 +1,6 @@
 version: "3"
+
+name: saga
 services:
 
   gateway:
@@ -27,7 +29,7 @@ services:
       - STOCK_REDIS_PASSWORD=redis
       - PAYMENT_REDIS_MASTER_NAME=payment-master
       - PAYMENT_REDIS_PASSWORD=redis
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 1 --timeout 30 --log-level=info app:app
     env_file:
       - env/order_redis.env
     depends_on:
@@ -37,8 +39,6 @@ services:
       - sentinel-1
       - sentinel-2
       - sentinel-3
-    deploy:
-      replicas: 4
     restart: always
 
   order-db:
@@ -71,7 +71,7 @@ services:
       context: .
       dockerfile: stock/Dockerfile
     image: stock:latest
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 1 --timeout 30 --log-level=info app:app
     env_file:
       - env/stock_redis.env
     environment:
@@ -89,8 +89,6 @@ services:
       - sentinel-1
       - sentinel-2
       - sentinel-3
-    deploy:
-      replicas: 4
     restart: always
 
   stock-db:
@@ -123,7 +121,7 @@ services:
       context: .
       dockerfile: ./payment/Dockerfile
     image: user:latest
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 1 --timeout 30 --log-level=info app:app
     env_file:
       - env/payment_redis.env
     environment:
@@ -141,8 +139,6 @@ services:
       - sentinel-1
       - sentinel-2
       - sentinel-3
-    deploy:
-      replicas: 4
     restart: always
 
   payment-db:
@@ -172,9 +168,9 @@ services:
 
   sentinel-1:
     image: redis:7.2-bookworm
-    command: redis-sentinel /etc/redis/sentinel.conf
+    command: redis-sentinel /etc/redis/sentinel-1.conf
     volumes:
-      - ./sentinel/sentinel-1.conf:/etc/redis/sentinel.conf
+      - ./sentinel:/etc/redis
     depends_on:
       order-db:
         condition: service_healthy
@@ -194,9 +190,9 @@ services:
 
   sentinel-2:
     image: redis:7.2-bookworm
-    command: redis-sentinel /etc/redis/sentinel.conf
+    command: redis-sentinel /etc/redis/sentinel-2.conf
     volumes:
-      - ./sentinel/sentinel-2.conf:/etc/redis/sentinel.conf
+      - ./sentinel:/etc/redis
     depends_on:
       order-db:
         condition: service_healthy
@@ -216,9 +212,9 @@ services:
 
   sentinel-3:
     image: redis:7.2-bookworm
-    command: redis-sentinel /etc/redis/sentinel.conf
+    command: redis-sentinel /etc/redis/sentinel-3.conf
     volumes:
-      - ./sentinel/sentinel-3.conf:/etc/redis/sentinel.conf
+      - ./sentinel:/etc/redis
     depends_on:
       order-db:
         condition: service_healthy
