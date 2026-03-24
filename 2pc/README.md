@@ -238,3 +238,18 @@ Reservation records have a **TTL (60 seconds)** — if the coordinator crashes a
 cd 2pc
 docker-compose up --build       # Terminal 1
 python3 -m unittest test.test_microservices -v  # Terminal 2
+
+## Appendix: Sequence Diagrams
+
+### Checkout — Happy Path
+
+All 2pc steps succeed: stock is reserved, payment is deducted, and the order is marked as paid.
+
+![Happy Path](diagrams/happy_2pc.png)
+
+### Checkout — Sad Path
+
+Although the Stock Service successfully reserves the items and votes YES, the Payment Service fails during the prepare phase and votes NO (e.g., due to insufficient funds).  
+The coordinator then aborts the transaction, instructing all participants to roll back their tentative changes.
+
+![Insufficient Stock](diagrams/sad_2pc.png)
