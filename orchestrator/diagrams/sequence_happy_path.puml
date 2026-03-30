@@ -1,0 +1,51 @@
+@startuml "Checkout - Happy Path"
+
+skinparam backgroundColor #FEFEFE
+skinparam shadowing false
+
+title Checkout - Happy Path
+
+actor Client
+participant "Nginx\nGateway" as GW
+participant "Order Service\n(+ Saga Orchestrator)" as Order
+database "order-db\n(+ tx log)" as OrderDB
+queue "stock-commands\n(stream)" as SCS
+participant "Stock\nService" as Stock
+database "stock-db" as StockDB
+queue "payment-commands\n(stream)" as PCS
+participant "Payment\nService" as Payment
+database "payment-db" as PayDB
+queue "tx-responses\n(stream)" as SRS
+
+== 1. Initiate Checkout ==
+Client -> GW : POST /orders/checkout/{order_id}
+GW -> Order : POST /checkout/{order_id}
+Order -> OrderDB : read order\n(items, user_id, total_cost)
+Order -> OrderDB : CREATE tx:{tx_id}\nstate=STARTED
+note right of Order : Transaction steps:\n1. RESERVE_STOCK\n2. DEDUCT_PAYMENT\n3. MARK_PAID
+
+== 2. Reserve Stock ==
+Order -> OrderDB : tx:{tx_id} state=RESERVING_STOCK
+Order -> SCS : XADD stock-commands\n{tx_id, cmd=RESERVE_STOCK, items}
+SCS -> Stock : XREADGROUP stock-commands
+Stock -> StockDB : subtract stock for each item
+Stock -> SRS : XADD tx-responses\n{tx_id, step=RESERVE_STOCK, status=SUCCESS}
+SRS -> Order : XREADGROUP tx-responses
+
+== 3. Deduct Payment ==
+Order -> OrderDB : tx:{tx_id} state=DEDUCTING_PAYMENT
+Order -> PCS : XADD payment-commands\n{tx_id, cmd=DEDUCT_PAYMENT, user_id, amount}
+PCS -> Payment : XREADGROUP payment-commands
+Payment -> PayDB : subtract credit
+Payment -> SRS : XADD tx-responses\n{tx_id, step=DEDUCT_PAYMENT, status=SUCCESS}
+SRS -> Order : XREADGROUP tx-responses
+
+== 4. Mark Order Paid ==
+Order -> OrderDB : set order.paid = true
+Order -> OrderDB : tx:{tx_id} state=COMPLETED
+note right of Order #LightGreen : Transaction completed successfully
+
+Order --> GW : 200 Checkout successful
+GW --> Client : 200 Checkout successful
+
+@enduml
