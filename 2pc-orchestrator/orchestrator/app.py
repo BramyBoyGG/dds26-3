@@ -87,16 +87,17 @@ def checkout(order_id: str):
     )
 
     if stock_resp is None:
-        # Stock service is unreachable — abort TODO ABORT order service
-        app.logger.error(f"2PC CHECKOUT {tx_id}: Stock service unreachable")
+        # Stock service is unreachable
+        app.logger.error(f"2PC CHECKOUT {tx_id}: Stock service unreachable - aborting order")
+        send_post_request(f"{GATEWAY_URL}/order/2pc/abort/{tx_id}")
         abort(400, "Stock service unavailable")
 
     if stock_resp.status_code == 200:
         app.logger.info(f"2PC CHECKOUT {tx_id}: Stock voted YES")
     else:
-        # Stock voted NO — no need to abort stock (it already said no).
-        # TODO abort order service
-        app.logger.info(f"2PC CHECKOUT {tx_id}: Stock voted NO — aborting")
+        # Stock voted NO
+        app.logger.info(f"2PC CHECKOUT {tx_id}: Stock voted NO — aborting order")
+        send_post_request(f"{GATEWAY_URL}/order/2pc/abort/{tx_id}")
         abort(400, f"Checkout failed: insufficient stock")
 
     # ── Step 3: Prepare Payment Service ──
@@ -108,17 +109,19 @@ def checkout(order_id: str):
     )
 
     if payment_resp is None:
-        # Payment service is unreachable — must abort stock (it was prepared) TODO abort order service
-        app.logger.error(f"2PC CHECKOUT {tx_id}: Payment service unreachable — aborting stock")
+        # Payment service is unreachable — must abort stock (it was prepared), abort order service
+        app.logger.error(f"2PC CHECKOUT {tx_id}: Payment service unreachable — aborting stock and order")
         send_post_request(f"{GATEWAY_URL}/stock/2pc/abort/{tx_id}")
+        send_post_request(f"{GATEWAY_URL}/order/2pc/abort/{tx_id}")
         abort(400, "Payment service unavailable")
 
     if payment_resp.status_code == 200:
         app.logger.info(f"2PC CHECKOUT {tx_id}: Payment voted YES")
     else:
-        # Payment voted NO — must abort stock (it was prepared) TODO abort order service
-        app.logger.info(f"2PC CHECKOUT {tx_id}: Payment voted NO — aborting stock")
+        # Payment voted NO — must abort stock (it was prepared), abort order service
+        app.logger.info(f"2PC CHECKOUT {tx_id}: Payment voted NO — aborting stock and order")
         send_post_request(f"{GATEWAY_URL}/stock/2pc/abort/{tx_id}")
+        send_post_request(f"{GATEWAY_URL}/order/2pc/abort/{tx_id}")
         abort(400, "Checkout failed: insufficient credit")
 
     # ═══════════════════════════════════════════════════════════════════
