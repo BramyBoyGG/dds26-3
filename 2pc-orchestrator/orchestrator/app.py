@@ -3,7 +3,6 @@ import os
 import uuid
 import requests
 
-from msgspec import Struct
 from flask import Flask, abort, Response
 
 
@@ -12,16 +11,6 @@ REQ_ERROR_STR = "Requests error"
 GATEWAY_URL = os.environ['GATEWAY_URL']
 
 app = Flask("order-service")
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Data Model
-# ═══════════════════════════════════════════════════════════════════════════
-
-class OrderValue(Struct):
-    paid: bool
-    items: list[tuple[str, int]]
-    user_id: str
-    total_cost: int
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helper Functions
@@ -60,7 +49,34 @@ def checkout(order_id: str):
     # PHASE 1: PREPARE (Voting)
     # Ask each participant: "Can you commit?"
     # ═══════════════════════════════════════════════════════════════════
-    # ── Step 1: Prepare Order Service ── TODO order service 2pc prepare, it should send back the order_entry
+    # ── Step 1: Prepare Order Service ──
+    app.logger.info(f"2PC CHECKOUT {tx_id}: Phase 1 — Preparing order...")
+    order_resp = send_post_request_json(
+        f"{GATEWAY_URL}/order/2pc/prepare/{tx_id}",
+        {"order_id": order_id}
+    )
+
+    if order_resp is None:
+        app.logger.error(f"2PC CHECKOUT {tx_id}: Order service unreachable")
+        abort(400, "Order service unavailable")
+
+    if order_resp.status_code == 200:
+        app.logger.info(f"2PC CHECKOUT {tx_id}: Order voted YES")
+    else:
+        # Order voted NO
+        app.logger.info(f"2PC CHECKOUT {tx_id}: Order voted NO — aborting")
+        abort(400, "Order cannot be prepared")
+
+    # parse order
+    order_data = order_resp.json()
+
+    items = order_data.get("items")
+    user_id = order_data.get("user_id")
+    total_cost = order_data.get("total_cost")
+
+    if not items:
+        app.logger.error(f"2PC CHECKOUT {tx_id}: Order items could not be parsed")
+        abort(400, "Order items could not be parsed")
 
     # ── Step 2: Prepare Stock Service ──
     # Ask the stock service to reserve all items in the order.
@@ -88,7 +104,7 @@ def checkout(order_id: str):
     app.logger.info(f"2PC CHECKOUT {tx_id}: Phase 1 — Preparing payment...")
     payment_resp = send_post_request_json(
         f"{GATEWAY_URL}/payment/2pc/prepare/{tx_id}",
-        {"user_id": order_entry.user_id, "amount": order_entry.total_cost}
+        {"user_id": user_id, "amount": total_cost}
     )
 
     if payment_resp is None:

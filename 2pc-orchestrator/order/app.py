@@ -226,7 +226,11 @@ def tpc_prepare(tx_id: str):
     db.set(lock_key, "PAID", ex=LOCK_TTL_SECONDS)
 
     app.logger.info(f"2PC PREPARE {tx_id}: VOTE YES — reserved order: {order_id}")
-    return Response("Prepared", status=200)
+    return jsonify({
+        "items": items,   # e.g. [["A", 2], ["B", 1]]
+        "total_cost": order_entry.total_cost,
+        "user_id": order_entry.user_id
+    }), 200
 
 
 @app.post('/2pc/commit/<tx_id>')
