@@ -9,13 +9,14 @@ import redis
 import requests
 
 from msgspec import msgpack, Struct
-from flask import Flask, jsonify, abort, Response
+from flask import Flask, jsonify, abort, Response, request
 
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
 
 GATEWAY_URL = os.environ['GATEWAY_URL']
+ORCHESTRATOR_URL = os.environ['ORCHESTRATOR_URL']
 
 app = Flask("order-service")
 
@@ -42,6 +43,11 @@ class OrderValue(Struct):
     user_id: str
     total_cost: int
 
+# ── 2PC Configuration ─────────────────────────────────────────────────────
+# Time-to-live for 2PC reservation records in Redis.
+# If a coordinator crashes and never sends commit/abort, the lock expires
+# automatically so credit isn't locked forever.
+LOCK_TTL_SECONDS = 60
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helper Functions
@@ -164,60 +170,34 @@ def add_item(order_id: str, item_id: str, quantity: int):
                     status=200)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 2PC Coordinator — Checkout
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# The Order Service acts as the COORDINATOR in the 2PC protocol.
-# It orchestrates the distributed transaction across two participants:
-#   - Stock Service  (reserve/release items)
-#   - Payment Service (deduct/refund credit)
-#
-# The checkout flow:
-#
-#   ┌─────────────────────────────────────────────────────────────────┐
-#   │                                                                 │
-#   │  1. Generate a unique transaction ID (tx_id)                    │
-#   │                                                                 │
-#   │  ═══ PHASE 1: PREPARE (Voting) ═══                              │
-#   │                                                                 │
-#   │  2. Send PREPARE to Stock Service                               │
-#   │     → "Can you reserve these items?"                            │
-#   │     → Stock subtracts tentatively, votes YES or NO              │
-#   │                                                                 │
-#   │  3. Send PREPARE to Payment Service                             │
-#   │     → "Can you deduct this amount from the user?"               │
-#   │     → Payment subtracts tentatively, votes YES or NO            │
-#   │                                                                 │
-#   │  ═══ DECISION ═══                                               │
-#   │                                                                 │
-#   │  4. If ALL voted YES → go to COMMIT                             │
-#   │     If ANY voted NO  → go to ABORT                              │
-#   │                                                                 │
-#   │  ═══ PHASE 2: COMMIT ═══                                        │
-#   │                                                                 │
-#   │  5. Send COMMIT to Stock Service                                │
-#   │  6. Send COMMIT to Payment Service                              │
-#   │  7. Mark order as paid → return 200                             │
-#   │                                                                 │
-#   │  ═══ PHASE 2: ABORT ═══                                         │
-#   │                                                                 │
-#   │  5. Send ABORT to all participants that were prepared            │
-#   │  6. Return 400 (checkout failed)                                │
-#   │                                                                 │
-#   └─────────────────────────────────────────────────────────────────┘
-#
-# ═══════════════════════════════════════════════════════════════════════════
-
 @app.post('/checkout/<order_id>')
 def checkout(order_id: str):
     """
-    2PC Coordinator: orchestrate a distributed checkout transaction.
-
-    This replaces the old simple-rollback approach with a proper
-    Two-Phase Commit protocol.
+    endpoint kept because specs need it
     """
-    app.logger.debug(f"Checking out {order_id}")
+    resp = requests.post(f"{ORCHESTRATOR_URL}/checkout/{order_id}", data=request.data)
+
+    return (resp.content, resp.status_code)
+
+@app.post('/2pc/prepare/<tx_id>')
+def tpc_prepare(tx_id: str):
+    """
+    """
+    lock_key = f"2pc:{tx_id}"
+
+    # ── Idempotency check ──
+    # If this transaction was already prepared, don't do it again.
+    if db.exists(lock_key):
+        app.logger.info(f"2PC PREPARE {tx_id}: Already prepared (duplicate request)")
+        return Response("Already prepared", status=409)
+
+    # ── Parse the request body ──
+    data = request.get_json()
+    if not data or "order_id" not in data:
+        return abort(400, "Missing 'order_id' in request body")
+
+    order_id = int(data["order_id"])
+
     order_entry: OrderValue = get_order_from_db(order_id)
 
     # Don't allow double-checkout
@@ -235,99 +215,93 @@ def checkout(order_id: str):
     if not items:
         abort(400, "Order has no items")
 
-    # ── Generate a unique transaction ID ──
-    # This tx_id ties together all the prepare/commit/abort calls
-    # across both participants.
-    tx_id = str(uuid.uuid4())
-    app.logger.info(f"2PC CHECKOUT {tx_id}: Starting for order {order_id}")
-
-    # Track which participants have been successfully prepared.
-    # We need this so that if Phase 1 fails, we know who to abort.
-    stock_prepared = False
-    payment_prepared = False
-
-    # ═══════════════════════════════════════════════════════════════════
-    # PHASE 1: PREPARE (Voting)
-    # Ask each participant: "Can you commit?"
-    # ═══════════════════════════════════════════════════════════════════
-
-    # ── Step 1: Prepare Stock Service ──
-    # Ask the stock service to reserve all items in the order.
-    app.logger.info(f"2PC CHECKOUT {tx_id}: Phase 1 — Preparing stock...")
-    stock_resp = send_post_request_json(
-        f"{GATEWAY_URL}/stock/2pc/prepare/{tx_id}",
-        {"items": items}
-    )
-
-    if stock_resp is None:
-        # Stock service is unreachable — abort (nothing to rollback yet)
-        app.logger.error(f"2PC CHECKOUT {tx_id}: Stock service unreachable")
-        abort(400, "Stock service unavailable")
-
-    if stock_resp.status_code == 200:
-        stock_prepared = True
-        app.logger.info(f"2PC CHECKOUT {tx_id}: Stock voted YES")
-    else:
-        # Stock voted NO — no need to abort stock (it already said no).
-        # Nothing was prepared, so nothing to clean up.
-        app.logger.info(f"2PC CHECKOUT {tx_id}: Stock voted NO — aborting")
-        abort(400, f"Checkout failed: insufficient stock")
-
-    # ── Step 2: Prepare Payment Service ──
-    # Ask the payment service to reserve the credit.
-    app.logger.info(f"2PC CHECKOUT {tx_id}: Phase 1 — Preparing payment...")
-    payment_resp = send_post_request_json(
-        f"{GATEWAY_URL}/payment/2pc/prepare/{tx_id}",
-        {"user_id": order_entry.user_id, "amount": order_entry.total_cost}
-    )
-
-    if payment_resp is None:
-        # Payment service is unreachable — must abort stock (it was prepared)
-        app.logger.error(f"2PC CHECKOUT {tx_id}: Payment service unreachable — aborting stock")
-        send_post_request(f"{GATEWAY_URL}/stock/2pc/abort/{tx_id}")
-        abort(400, "Payment service unavailable")
-
-    if payment_resp.status_code == 200:
-        payment_prepared = True
-        app.logger.info(f"2PC CHECKOUT {tx_id}: Payment voted YES")
-    else:
-        # Payment voted NO — must abort stock (it was prepared)
-        app.logger.info(f"2PC CHECKOUT {tx_id}: Payment voted NO — aborting stock")
-        send_post_request(f"{GATEWAY_URL}/stock/2pc/abort/{tx_id}")
-        abort(400, "Checkout failed: insufficient credit")
-
-    # ═══════════════════════════════════════════════════════════════════
-    # DECISION: Both participants voted YES
-    # ═══════════════════════════════════════════════════════════════════
-    app.logger.info(f"2PC CHECKOUT {tx_id}: All participants voted YES — committing...")
-
-    # ═══════════════════════════════════════════════════════════════════
-    # PHASE 2: COMMIT
-    # Tell all participants to finalize their changes.
-    # ═══════════════════════════════════════════════════════════════════
-
-    # ── Step 3: Commit Stock Service ──
-    stock_commit_resp = send_post_request(f"{GATEWAY_URL}/stock/2pc/commit/{tx_id}")
-    if stock_commit_resp is None or stock_commit_resp.status_code != 200:
-        app.logger.error(f"2PC CHECKOUT {tx_id}: Stock commit failed!")
-        # In strict 2PC, we should retry commits indefinitely.
-        # For simplicity, we log the error. The TTL on the lock will
-        # eventually clean it up.
-
-    # ── Step 4: Commit Payment Service ──
-    payment_commit_resp = send_post_request(f"{GATEWAY_URL}/payment/2pc/commit/{tx_id}")
-    if payment_commit_resp is None or payment_commit_resp.status_code != 200:
-        app.logger.error(f"2PC CHECKOUT {tx_id}: Payment commit failed!")
-
-    # ── Step 5: Mark order as paid ──
+    # ── Mark order as paid tentatively ──
     order_entry.paid = True
     try:
         db.set(order_id, msgpack.encode(order_entry))
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
 
-    app.logger.info(f"2PC CHECKOUT {tx_id}: Checkout successful for order {order_id}")
-    return Response("Checkout successful", status=200)
+    # ── Store the reservation ──
+    db.set(lock_key, "PAID", ex=LOCK_TTL_SECONDS)
+
+    app.logger.info(f"2PC PREPARE {tx_id}: VOTE YES — reserved order: {order_id}")
+    return Response("Prepared", status=200)
+
+
+@app.post('/2pc/commit/<tx_id>')
+def tpc_commit(tx_id: str):
+    """
+    ┌──────────────────────────────────────────────────────────────────┐
+    │  PHASE 2: COMMIT                                                 │
+    │                                                                  │
+    │  The coordinator says: "All participants voted YES — commit!"     │
+    │                                                                  │
+    │                                                                  │
+    │  This endpoint is idempotent: calling it twice is safe.          │
+    │                                                                  │
+    │  Returns:                                                        │
+    │    200 = Committed successfully (or already committed)            │
+    └──────────────────────────────────────────────────────────────────┘
+    """
+    lock_key = f"2pc:{tx_id}"
+
+    if not db.exists(lock_key):
+        # Already committed or lock expired — that's fine (idempotent)
+        app.logger.info(f"2PC COMMIT {tx_id}: No reservation found (already committed)")
+        return Response("Already committed", status=200)
+
+    # Credit was already deducted during prepare.
+    # Just delete the reservation record to finalize.
+    db.delete(lock_key)
+
+    app.logger.info(f"2PC COMMIT {tx_id}: Committed — reservation cleared")
+    return Response("Committed", status=200)
+
+@app.post('/2pc/abort/<tx_id>')
+def tpc_abort(tx_id: str):
+    """
+    ┌──────────────────────────────────────────────────────────────────┐
+    │  PHASE 2: ABORT                                                  │
+    │                                                                  │
+    │  The coordinator says: "A participant voted NO — roll back!"      │
+    │                                                                  │
+    │                                                                  │
+    │  This endpoint is idempotent: calling it twice is safe.          │
+    │                                                                  │
+    │  Returns:                                                        │
+    │    200 = Aborted and credit restored (or nothing to abort)        │
+    └──────────────────────────────────────────────────────────────────┘
+    """
+    lock_key = f"2pc:{tx_id}"
+
+    # Read the reservation to know what to restore
+    reservation_raw = db.get(lock_key)
+    if not reservation_raw:
+        # Nothing to abort — already aborted or never prepared (idempotent)
+        app.logger.info(f"2PC ABORT {tx_id}: No reservation found (already aborted)")
+        return Response("Nothing to abort", status=200)
+
+    data = request.get_json()
+    if not data or "order_id" not in data:
+        return abort(400, "Missing 'order_id' in request body")
+
+    order_id = int(data["order_id"])
+
+    try:
+        # set order.paid in database to false
+        order_entry: OrderValue = get_order_from_db(order_id)
+        if order_entry:
+            order_entry.paid = False
+            db.set(order_id, msgpack.encode(order_entry))
+    except redis.exceptions.RedisError:
+        app.logger.error(f"2PC ABORT {tx_id}: Failed to restore order to unpaid")
+
+    # Delete the reservation record
+    db.delete(lock_key)
+
+    app.logger.info(f"2PC ABORT {tx_id}: Aborted — restored order to unpaid")
+    return Response("Aborted", status=200)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
