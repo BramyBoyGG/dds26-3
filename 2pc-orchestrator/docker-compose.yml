@@ -54,3 +54,10 @@ services:
   payment-db:
     image: redis:7.2-bookworm
     command: redis-server --requirepass redis --maxmemory 512mb
+
+  orchestrator-service:
+    build: ./orchestrator
+    image: orchestrator:latest
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    environment:
+      - GATEWAY_URL=http://gateway:80

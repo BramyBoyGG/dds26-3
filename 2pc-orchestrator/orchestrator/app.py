@@ -37,7 +37,7 @@ def send_post_request_json(url: str, data: dict):
 # 2PC orchestration
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.post('/checkout/<order_id>')
+@app.post('/checkout-orchestrator/<order_id>')
 def checkout(order_id: str):
     # ── Generate a unique transaction ID ──
     # This tx_id ties together all the prepare/commit/abort calls
@@ -52,7 +52,7 @@ def checkout(order_id: str):
     # ── Step 1: Prepare Order Service ──
     app.logger.info(f"2PC CHECKOUT {tx_id}: Phase 1 — Preparing order...")
     order_resp = send_post_request_json(
-        f"{GATEWAY_URL}/order/2pc/prepare/{tx_id}",
+        f"{GATEWAY_URL}/orders/2pc/prepare/{tx_id}",
         {"order_id": order_id}
     )
 
@@ -89,7 +89,7 @@ def checkout(order_id: str):
     if stock_resp is None:
         # Stock service is unreachable
         app.logger.error(f"2PC CHECKOUT {tx_id}: Stock service unreachable - aborting order")
-        send_post_request(f"{GATEWAY_URL}/order/2pc/abort/{tx_id}")
+        send_post_request(f"{GATEWAY_URL}/orders/2pc/abort/{tx_id}")
         abort(400, "Stock service unavailable")
 
     if stock_resp.status_code == 200:
@@ -97,7 +97,7 @@ def checkout(order_id: str):
     else:
         # Stock voted NO
         app.logger.info(f"2PC CHECKOUT {tx_id}: Stock voted NO — aborting order")
-        send_post_request(f"{GATEWAY_URL}/order/2pc/abort/{tx_id}")
+        send_post_request(f"{GATEWAY_URL}/orders/2pc/abort/{tx_id}")
         abort(400, f"Checkout failed: insufficient stock")
 
     # ── Step 3: Prepare Payment Service ──
@@ -112,7 +112,7 @@ def checkout(order_id: str):
         # Payment service is unreachable — must abort stock (it was prepared), abort order service
         app.logger.error(f"2PC CHECKOUT {tx_id}: Payment service unreachable — aborting stock and order")
         send_post_request(f"{GATEWAY_URL}/stock/2pc/abort/{tx_id}")
-        send_post_request(f"{GATEWAY_URL}/order/2pc/abort/{tx_id}")
+        send_post_request(f"{GATEWAY_URL}/orders/2pc/abort/{tx_id}")
         abort(400, "Payment service unavailable")
 
     if payment_resp.status_code == 200:
@@ -121,7 +121,7 @@ def checkout(order_id: str):
         # Payment voted NO — must abort stock (it was prepared), abort order service
         app.logger.info(f"2PC CHECKOUT {tx_id}: Payment voted NO — aborting stock and order")
         send_post_request(f"{GATEWAY_URL}/stock/2pc/abort/{tx_id}")
-        send_post_request(f"{GATEWAY_URL}/order/2pc/abort/{tx_id}")
+        send_post_request(f"{GATEWAY_URL}/orders/2pc/abort/{tx_id}")
         abort(400, "Checkout failed: insufficient credit")
 
     # ═══════════════════════════════════════════════════════════════════
@@ -135,7 +135,7 @@ def checkout(order_id: str):
     # ═══════════════════════════════════════════════════════════════════
 
     # ── Step 4: Commit Order Service ──
-    order_commit_resp = send_post_request(f"{GATEWAY_URL}/order/2pc/commit/{tx_id}")
+    order_commit_resp = send_post_request(f"{GATEWAY_URL}/orders/2pc/commit/{tx_id}")
     if order_commit_resp is None or order_commit_resp.status_code != 200:
         app.logger.error(f"2PC CHECKOUT {tx_id}: Order commit failed!")
         # In strict 2PC, we should retry commits indefinitely.

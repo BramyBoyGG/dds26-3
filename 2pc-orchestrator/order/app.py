@@ -16,7 +16,6 @@ DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
 
 GATEWAY_URL = os.environ['GATEWAY_URL']
-ORCHESTRATOR_URL = os.environ['ORCHESTRATOR_URL']
 
 app = Flask("order-service")
 
@@ -175,8 +174,7 @@ def checkout(order_id: str):
     """
     endpoint kept because specs need it
     """
-    resp = requests.post(f"{ORCHESTRATOR_URL}/checkout/{order_id}", data=request.data)
-
+    resp = requests.post(f"{GATEWAY_URL}/orchestrator/checkout-orchestrator/{order_id}", data=request.data)
     return (resp.content, resp.status_code)
 
 @app.post('/2pc/prepare/<tx_id>')
