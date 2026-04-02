@@ -134,15 +134,18 @@ def checkout(order_id: str):
     # Tell all participants to finalize their changes.
     # ═══════════════════════════════════════════════════════════════════
 
-    # ── Step 4: Commit Order Service ── TODO mark order as paid
-
+    # ── Step 4: Commit Order Service ──
+    order_commit_resp = send_post_request(f"{GATEWAY_URL}/order/2pc/commit/{tx_id}")
+    if order_commit_resp is None or order_commit_resp.status_code != 200:
+        app.logger.error(f"2PC CHECKOUT {tx_id}: Order commit failed!")
+        # In strict 2PC, we should retry commits indefinitely.
+        # For simplicity, we log the error. The TTL on the lock will
+        # eventually clean it up.
+    
     # ── Step 5: Commit Stock Service ──
     stock_commit_resp = send_post_request(f"{GATEWAY_URL}/stock/2pc/commit/{tx_id}")
     if stock_commit_resp is None or stock_commit_resp.status_code != 200:
         app.logger.error(f"2PC CHECKOUT {tx_id}: Stock commit failed!")
-        # In strict 2PC, we should retry commits indefinitely.
-        # For simplicity, we log the error. The TTL on the lock will
-        # eventually clean it up.
 
     # ── Step 6: Commit Payment Service ──
     payment_commit_resp = send_post_request(f"{GATEWAY_URL}/payment/2pc/commit/{tx_id}")
