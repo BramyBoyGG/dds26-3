@@ -135,7 +135,7 @@ def checkout(order_id: str):
     # ═══════════════════════════════════════════════════════════════════
 
     # ── Step 4: Commit Order Service ──
-    order_commit_resp = send_post_request(f"{GATEWAY_URL}/orders/2pc/commit/{tx_id}")
+    order_commit_resp = send_post_request_json(f"{GATEWAY_URL}/orders/2pc/commit/{tx_id}", {"order_id": order_id})
     if order_commit_resp is None or order_commit_resp.status_code != 200:
         app.logger.error(f"2PC CHECKOUT {tx_id}: Order commit failed!")
         # In strict 2PC, we should retry commits indefinitely.

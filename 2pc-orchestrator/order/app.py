@@ -206,13 +206,6 @@ def tpc_prepare(tx_id: str):
     if not items:
         abort(400, "Order has no items")
 
-    # ── Mark order as paid tentatively ──
-    order_entry.paid = True
-    try:
-        db.set(order_id, msgpack.encode(order_entry))
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-
     # ── Store the reservation ──
     db.set(lock_key, "PAID", ex=LOCK_TTL_SECONDS)
 
@@ -245,8 +238,23 @@ def tpc_commit(tx_id: str):
         # Already committed or lock expired — that's fine (idempotent)
         app.logger.info(f"2PC COMMIT {tx_id}: No reservation found (already committed)")
         return Response("Already committed", status=200)
+    
 
-    # Credit was already deducted during prepare.
+    data = request.get_json()
+    if not data or "order_id" not in data:
+        return abort(400, "Missing 'order_id' in request body")
+
+    order_id = data["order_id"]
+    
+    order_entry: OrderValue = get_order_from_db(order_id)
+
+    # ── Mark order as paid tentatively ──
+    order_entry.paid = True
+    try:
+        db.set(order_id, msgpack.encode(order_entry))
+    except redis.exceptions.RedisError:
+        return abort(400, DB_ERROR_STR)
+
     # Just delete the reservation record to finalize.
     db.delete(lock_key)
 
@@ -277,25 +285,10 @@ def tpc_abort(tx_id: str):
         app.logger.info(f"2PC ABORT {tx_id}: No reservation found (already aborted)")
         return Response("Nothing to abort", status=200)
 
-    data = request.get_json()
-    if not data or "order_id" not in data:
-        return abort(400, "Missing 'order_id' in request body")
-
-    order_id = data["order_id"]
-
-    try:
-        # set order.paid in database to false
-        order_entry: OrderValue = get_order_from_db(order_id)
-        if order_entry:
-            order_entry.paid = False
-            db.set(order_id, msgpack.encode(order_entry))
-    except redis.exceptions.RedisError:
-        app.logger.error(f"2PC ABORT {tx_id}: Failed to restore order to unpaid")
-
     # Delete the reservation record
     db.delete(lock_key)
 
-    app.logger.info(f"2PC ABORT {tx_id}: Aborted — restored order to unpaid")
+    app.logger.info(f"2PC ABORT {tx_id}: Aborted — deleted reservation lock")
     return Response("Aborted", status=200)
 
 
