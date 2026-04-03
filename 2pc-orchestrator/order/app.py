@@ -180,7 +180,7 @@ def tpc_prepare(tx_id: str):
     # If this transaction was already prepared, don't do it again.
     if db.exists(lock_key):
         app.logger.info(f"2PC PREPARE {tx_id}: Already prepared (duplicate request)")
-        return Response("Already prepared", status=409)
+        return Response("Already prepared", status=200)
 
     # ── Parse the request body ──
     data = request.get_json()
