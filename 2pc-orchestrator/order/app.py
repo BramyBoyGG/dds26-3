@@ -169,18 +169,11 @@ def add_item(order_id: str, item_id: str, quantity: int):
                     status=200)
 
 
-@app.post('/checkout/<order_id>')
-def checkout(order_id: str):
-    """
-    endpoint kept because specs need it
-    """
-    resp = requests.post(f"{GATEWAY_URL}/orchestrator/checkout-orchestrator/{order_id}", data=request.data)
-    return (resp.content, resp.status_code)
-
 @app.post('/2pc/prepare/<tx_id>')
 def tpc_prepare(tx_id: str):
     """
     """
+    app.logger.info(f"2PC PREPARE {tx_id}: Starting preparation")
     lock_key = f"2pc:{tx_id}"
 
     # ── Idempotency check ──
@@ -194,7 +187,7 @@ def tpc_prepare(tx_id: str):
     if not data or "order_id" not in data:
         return abort(400, "Missing 'order_id' in request body")
 
-    order_id = int(data["order_id"])
+    order_id = data["order_id"]
 
     order_entry: OrderValue = get_order_from_db(order_id)
 
@@ -288,7 +281,7 @@ def tpc_abort(tx_id: str):
     if not data or "order_id" not in data:
         return abort(400, "Missing 'order_id' in request body")
 
-    order_id = int(data["order_id"])
+    order_id = data["order_id"]
 
     try:
         # set order.paid in database to false
