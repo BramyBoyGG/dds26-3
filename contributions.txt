@@ -2,4 +2,5 @@ Contributions
 =============
 
 Taeyong Kwon (rnjsxodyd90) 6283276- Implemented payment in the first part of the project. Implemented orchestration and refactored it.
-Madhav Chawla (mchawla1) 5717930 - Implemented 2PC in second half of project and in first half helped planning between teamates and create shared tools folder.
+Madhav Chawla (mchawla1) 5717930 - Implemented vanilla 2PC and in first half helped planning between teamates and create shared tools folder.
+Bram Snelten (BramyBoyGG) 5519365 - Implemented orchestrator 2pc and prepared deployment for vanilla saga.
