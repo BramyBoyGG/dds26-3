@@ -1,0 +1,4 @@
+Contributions
+=============
+
+Taeyong Kwon (rnjsxodyd90) 6283276- Implemented payment in the first part of the project. Implemented orchestration and refactored it.
