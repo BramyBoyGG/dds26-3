@@ -1,0 +1,105 @@
+version: "3.8"
+
+name: 2pc-orchestrator-small
+
+services:
+
+  gateway:
+    image: nginx:1.25-bookworm
+    volumes:
+      - ./gateway_nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8000:80"
+    depends_on:
+      - order-service
+      - stock-service
+      - payment-service
+      - orchestrator-service
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+    restart: always
+
+  order-service:
+    build: ./order
+    image: order:latest
+    environment:
+      - GATEWAY_URL=http://gateway:80
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    env_file:
+      - env/order_redis.env
+    depends_on:
+      - order-db
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+    restart: always
+
+  order-db:
+    image: redis:7.2-bookworm
+    command: redis-server --requirepass redis --maxmemory 512mb
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+    restart: always
+
+  stock-service:
+    build: ./stock
+    image: stock:latest
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    env_file:
+      - env/stock_redis.env
+    depends_on:
+      - stock-db
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+    restart: always
+
+  stock-db:
+    image: redis:7.2-bookworm
+    command: redis-server --requirepass redis --maxmemory 512mb
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+    restart: always
+
+  payment-service:
+    build: ./payment
+    image: user:latest
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    env_file:
+      - env/payment_redis.env
+    depends_on:
+      - payment-db
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+    restart: always
+
+  payment-db:
+    image: redis:7.2-bookworm
+    command: redis-server --requirepass redis --maxmemory 512mb
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+    restart: always
+
+  orchestrator-service:
+    build: ./orchestrator
+    image: orchestrator:latest
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    environment:
+      - GATEWAY_URL=http://gateway:80
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+    restart: always
